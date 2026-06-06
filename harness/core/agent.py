@@ -41,7 +41,7 @@ class BaseAgent(ABC):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 8192
     temperature: float = 1.0  # Claude 推荐 extended thinking 用 1.0
-    enable_thinking: bool = False  # OpenAI 兼容 API (agnes) 的 thinking 模式
+    enable_thinking: bool = False  # 通用 thinking 开关，具体行为由 _get_extra_body() 按模型映射
 
     def __init__(
         self,
@@ -225,6 +225,23 @@ class BaseAgent(ABC):
     # LLM 调用
     # ------------------------------------------------------------------
 
+    def _build_extra_body(self) -> Optional[dict]:
+        """
+        构建 OpenAI 兼容 API 的 extra_body 参数。
+
+        按模型名称分发：不同模型的 thinking/特殊参数各不相同，
+        避免将模型专属参数泄露到其他模型。
+        子类可覆盖此方法以添加更多模型专属参数。
+        """
+        if not self.enable_thinking:
+            return None
+        # agnes-* 系列模型通过 chat_template_kwargs 启用 thinking
+        model_lower = self.model.lower()
+        if "agnes" in model_lower:
+            return {"chat_template_kwargs": {"enable_thinking": True}}
+        # 其他模型暂不注入额外参数，子类可覆盖扩展
+        return None
+
     def _call_llm(self, prompt: str, system: Optional[str] = None) -> str:
         """调用 LLM API，返回文本响应。支持 Anthropic 和 OpenAI 兼容 API。"""
         t_start = time.time()
@@ -242,11 +259,9 @@ class BaseAgent(ABC):
                 "max_tokens": self.max_tokens,
                 "temperature": self.temperature,
             }
-            # agnes-2.0-flash thinking 模式
-            if self.enable_thinking:
-                create_kwargs["extra_body"] = {
-                    "chat_template_kwargs": {"enable_thinking": True}
-                }
+            extra_body = self._build_extra_body()
+            if extra_body is not None:
+                create_kwargs["extra_body"] = extra_body
 
             response = self._client.chat.completions.create(**create_kwargs)
             result = response.choices[0].message.content
@@ -317,10 +332,9 @@ class BaseAgent(ABC):
                 "max_tokens": self.max_tokens,
                 "temperature": self.temperature,
             }
-            if self.enable_thinking:
-                create_kwargs["extra_body"] = {
-                    "chat_template_kwargs": {"enable_thinking": True}
-                }
+            extra_body = self._build_extra_body()
+            if extra_body is not None:
+                create_kwargs["extra_body"] = extra_body
 
             response = self._client.chat.completions.create(**create_kwargs)
             result = response.choices[0].message.content
@@ -335,7 +349,7 @@ class BaseAgent(ABC):
                 usage=response.usage,
             )
         else:
-            # Anthropic API 调用
+            # Anthropic API 调用 (with history)
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "max_tokens": self.max_tokens,
