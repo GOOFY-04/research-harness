@@ -1,0 +1,8 @@
+.env
+sessions/
+memory/
+harness.log
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

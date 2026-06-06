@@ -1,0 +1,46 @@
+# Skills 配置文件
+# 定义可用的 skills 及其参数
+
+skills:
+  # === 代码质量 ===
+  code_review:
+    enabled: true
+    description: "对代码进行静态分析和质量审查"
+    auto_trigger: false  # 是否在 coding 阶段后自动触发
+
+  dependency_check:
+    enabled: true
+    description: "检查依赖包的版本、冲突和安全漏洞"
+    auto_trigger: false
+
+  test_generation:
+    enabled: true
+    description: "为给定代码自动生成单元测试"
+    auto_trigger: false
+
+  # === 文献与论文 ===
+  paper_summary:
+    enabled: true
+    description: "使用 LLM 对论文进行结构化摘要，提取贡献、方法和关键词"
+    auto_trigger: false
+
+  citation_format:
+    enabled: true
+    description: "验证和格式化 BibTeX 引用条目，检查缺失字段，统一格式"
+    auto_trigger: false
+
+  latex_compile:
+    enabled: true
+    description: "编译 LaTeX 源文件为 PDF，检测错误和警告"
+    auto_trigger: false
+
+  # === 实验与分析 ===
+  experiment_tracker:
+    enabled: true
+    description: "追踪和对比多个实验的指标，生成对比表格和最优分析"
+    auto_trigger: true  # 在 code_execution 后自动触发
+
+  plot_generation:
+    enabled: true
+    description: "生成实验结果的 matplotlib 图表（折线图、柱状图、散点图、多曲线对比）"
+    auto_trigger: false

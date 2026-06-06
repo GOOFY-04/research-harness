@@ -1,0 +1,40 @@
+# research-harness 默认配置
+
+# Anthropic API
+anthropic:
+  api_key: ""          # 留空则从环境变量 ANTHROPIC_API_KEY 读取
+  default_model: "claude-sonnet-4-6"
+
+# 路径
+paths:
+  sessions_dir: "sessions"
+  memory_dir: "memory"
+  workflows_dir: "workflows"
+
+# 工作流
+workflow:
+  default: "workflows/research.yaml"
+  resume: true           # 默认断点续跑
+
+# Agent 配置
+agents:
+  planner:
+    use_extended_thinking: true
+    thinking_budget: 8000
+  method:
+    use_extended_thinking: true
+    thinking_budget: 10000
+  reviewer:
+    use_extended_thinking: true
+    thinking_budget: 8000
+  literature:
+    use_extended_thinking: false
+  coder:
+    use_extended_thinking: false
+  writer:
+    use_extended_thinking: false
+
+# 日志
+logging:
+  level: "INFO"          # DEBUG | INFO | WARNING | ERROR
+  file: "harness.log"

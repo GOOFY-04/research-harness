@@ -1,0 +1,101 @@
+name: autonomous_research
+description: 面向长流程科研的完整自动化流水线
+
+stages:
+  - id: planning
+    name: 选题与研究规划
+    agent: planner
+    max_retries: 2
+    inputs:
+      research_direction: ""   # 由 CLI 注入，见 main.py
+    # 无依赖，第一个阶段
+
+  - id: literature
+    name: 文献调研
+    agent: literature
+    depends_on: [planning]
+    max_retries: 2
+    input_from:
+      research_question: planning.research_question
+      keywords: planning.keywords
+
+  - id: method_design
+    name: 方法设计
+    agent: method
+    depends_on: [literature]
+    max_retries: 10
+    input_from:
+      research_question: planning.research_question
+      research_gaps: literature.research_gaps
+      key_baselines: literature.key_baselines
+      related_work_draft: literature.related_work_draft
+
+  - id: coding
+    name: 代码实现
+    agent: coder
+    depends_on: [method_design]
+    max_retries: 2
+    input_from:
+      method_name: method_design.method_name
+      overview: method_design.overview
+      components: method_design.components
+      algorithm: method_design.algorithm
+
+  - id: code_execution
+    name: 代码执行与验证
+    agent: executor
+    depends_on: [coding]
+    max_retries: 1
+    input_from:
+      files: coding.files
+      entry_point: coding.entry_point
+      dependencies: coding.dependencies
+      test_snippet: coding.test_snippet
+
+  - id: self_review
+    name: 自我审稿
+    agent: reviewer
+    depends_on: [method_design, literature]
+    max_retries: 1
+    input_from:
+      research_question: planning.research_question
+      method: method_design
+      research_gaps: literature.research_gaps
+      key_baselines: literature.key_baselines
+
+  - id: revision
+    name: 修订规划
+    agent: revision
+    depends_on: [self_review]
+    max_retries: 1
+    input_from:
+      review_result: self_review
+
+  - id: paper_writing
+    name: 论文撰写
+    agent: writer
+    depends_on: [revision]
+    max_retries: 2
+    input_from:
+      research_question: planning.research_question
+      novelty_hypothesis: planning.novelty_hypothesis
+      keywords: planning.keywords
+      method: method_design
+      related_work_draft: literature.related_work_draft
+      review: self_review
+      revision_notes: revision
+
+  - id: documentation
+    name: 文档生成
+    agent: documenter
+    depends_on: [code_execution, paper_writing]
+    max_retries: 1
+    input_from:
+      research_question: planning.research_question
+      method_name: method_design.method_name
+      method_overview: method_design.overview
+      files: coding.files
+      entry_point: coding.entry_point
+      dependencies: coding.dependencies
+      run_instructions: coding.run_instructions
+      execution_summary: code_execution.analysis.summary
