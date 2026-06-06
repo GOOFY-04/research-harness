@@ -41,6 +41,7 @@ class BaseAgent(ABC):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 8192
     temperature: float = 1.0  # Claude 推荐 extended thinking 用 1.0
+    enable_thinking: bool = False  # OpenAI 兼容 API (agnes) 的 thinking 模式
 
     def __init__(
         self,
@@ -55,6 +56,11 @@ class BaseAgent(ABC):
             use_extended_thinking = getattr(self.__class__, "use_extended_thinking", False)
         self.use_extended_thinking = use_extended_thinking
         self.thinking_budget = thinking_budget
+        # OpenAI API 的 thinking 模式：优先读取类属性，可通过环境变量全局开启
+        self.enable_thinking = (
+            getattr(self.__class__, "enable_thinking", False)
+            or os.environ.get("ENABLE_THINKING", "").lower() == "true"
+        )
         self._conversations: list[dict] = []
 
         # 检查是否使用 OpenAI 兼容 API
@@ -78,6 +84,10 @@ class BaseAgent(ABC):
                 timeout=timeout_seconds,
             )
             self._api_type = "openai"
+
+            # Anthropic extended_thinking 映射到 OpenAI API 的 enable_thinking
+            if self.use_extended_thinking:
+                self.enable_thinking = True
 
             # 从环境变量读取模型名称
             self.model = os.environ.get("OPENAI_MODEL", self.model)
@@ -226,12 +236,19 @@ class BaseAgent(ABC):
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
 
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            }
+            # agnes-2.0-flash thinking 模式
+            if self.enable_thinking:
+                create_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": True}
+                }
+
+            response = self._client.chat.completions.create(**create_kwargs)
             result = response.choices[0].message.content
             elapsed = time.time() - t_start
 
@@ -294,12 +311,18 @@ class BaseAgent(ABC):
                 openai_messages.append({"role": "system", "content": system})
             openai_messages.extend(messages)
 
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": openai_messages,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            }
+            if self.enable_thinking:
+                create_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": True}
+                }
+
+            response = self._client.chat.completions.create(**create_kwargs)
             result = response.choices[0].message.content
             elapsed = time.time() - t_start
 

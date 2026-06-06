@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 class CoderAgent(BaseAgent):
     model = "claude-sonnet-4-6"
     max_tokens = 8192
+    enable_thinking = True  # agnes-2.0-flash 编码任务启用 thinking
 
     def build_prompt(self, stage_id: str, inputs: dict, state: dict) -> str:
         # 仅用于 WorkflowEngine 调用 run() 时传入 inputs，实际 prompt 在 run() 里构建
