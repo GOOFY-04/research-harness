@@ -1,14 +1,49 @@
-# 🎉 research-harness 功能增强完成
+# research-harness 功能增强完成
 
-## 📊 总览
+## 总览
 
-已成功为 research-harness 添加了三大核心功能，使其成为一个完整的端到端科研自动化框架。
+已成功为 research-harness 添加了五大核心功能，使其成为一个完整的端到端科研自动化框架。
 
 ---
 
-## ✨ 新增功能
+## 新增功能
 
-### 1️⃣ 自主代码执行 (ExecutorAgent)
+### 1. 迭代修订系统 (RevisionAgent)
+
+**文件**: `harness/agents/revision.py`
+
+**功能**:
+- 基于审稿意见智能决策是否需要修订
+- 支持四种修订类型：code / experiment / baseline / writing
+- 自动制定修订计划并清除已完成阶段
+- WorkflowEngine 支持迭代执行，最多 5 轮
+
+**工作流位置**: `self_review` → **`revision`** → `paper_writing` (可回到 `coding`)
+
+---
+
+### 2. 社区 Skill 自动获取系统
+
+**SkillHunterAgent** (`harness/agents/skill_hunter.py`):
+- 分析失败原因，识别缺失的能力
+- 从 GitHub / PyPI / HuggingFace 搜索相关工具
+- 评估候选 skill 的质量、安全性、兼容性
+- 输出结构化推荐（含集成策略、风险评估）
+
+**SkillIntegrator** (`harness/tools/skill_integrator.py`):
+- **下载模块**：GitHub (git clone/zip)、PyPI (pip install)、HuggingFace (huggingface_hub/HTTP)
+- **安全模块**：AST 静态扫描 + 许可证验证 + 文件大小限制
+- **沙盒执行**：隔离子进程 + 受限 builtins + 60s 超时
+- **生命周期**：install/remove/list + manifest.json 持久化
+
+**WorkflowEngine 自动触发**:
+- `auto_skill_hunt` 配置开关
+- 阶段失败后自动调用 SkillHunter → SkillIntegrator
+- 集成成功后重置失败阶段重试
+
+---
+
+### 3. 自主代码执行 (ExecutorAgent)
 
 **文件**: `harness/agents/executor.py`
 
@@ -63,99 +98,136 @@ SkillRegistry (注册表)
 | `code_review` | `harness/skills/code_review.py` | 代码质量审查，发现问题和改进建议 |
 | `dependency_check` | `harness/skills/dependency_check.py` | 检查依赖包版本、冲突和安全漏洞 |
 | `test_generation` | `harness/skills/test_generation.py` | 自动生成单元测试 |
+| `paper_summary` | `harness/skills/paper_summary.py` | 论文结构化摘要，提取贡献/方法/关键词 |
+| `citation_format` | `harness/skills/citation_format.py` | BibTeX 验证与格式化，会议名标准化 |
+| `experiment_tracker` | `harness/skills/experiment_tracker.py` | 实验指标追踪对比，自动生成对比表格 |
+| `plot_generation` | `harness/skills/plot_generation.py` | matplotlib 图表生成（折线/柱状/散点/多曲线对比）|
+| `latex_compile` | `harness/skills/latex_compile.py` | LaTeX 编译为 PDF，错误检测 |
 
-**扩展性**: 支持用户自定义 skills，只需继承 `Skill` 基类并注册即可。
+**扩展性**: 支持用户自定义 skills + 社区 skill 自动发现，只需继承 `Skill` 基类并注册即可。
 
 ---
 
-## 📂 新增文件清单
+## 完整文件清单
 
 ```
 research-harness/
 ├── harness/
 │   ├── core/
-│   │   └── skill.py                    # ⭐ Skill 系统核心
+│   │   ├── agent.py                    # Agent 基类
+│   │   ├── workflow.py                 # 工作流引擎（迭代 + 自动 skill 获取）
+│   │   ├── checkpoint.py               # 状态持久化
+│   │   ├── memory.py                   # 跨 session 记忆
+│   │   └── skill.py                    # Skill 系统核心
 │   ├── agents/
-│   │   ├── executor.py                 # ⭐ 代码执行 Agent
-│   │   └── documenter.py               # ⭐ 文档生成 Agent
-│   └── skills/                         # ⭐ Skills 模块
-│       ├── __init__.py
-│       ├── code_review.py
-│       ├── dependency_check.py
-│       └── test_generation.py
+│   │   ├── planner.py
+│   │   ├── literature.py
+│   │   ├── method.py
+│   │   ├── coder.py
+│   │   ├── executor.py
+│   │   ├── reviewer.py
+│   │   ├── revision.py                 # 迭代修订
+│   │   ├── writer.py
+│   │   ├── documenter.py
+│   │   └── skill_hunter.py             # 社区 skill 发现
+│   ├── skills/                         # Skills 模块 (8 个)
+│   │   ├── code_review.py
+│   │   ├── dependency_check.py
+│   │   ├── test_generation.py
+│   │   ├── paper_summary.py
+│   │   ├── citation_format.py
+│   │   ├── experiment_tracker.py
+│   │   ├── plot_generation.py
+│   │   └── latex_compile.py
+│   └── tools/
+│       ├── arxiv.py
+│       ├── code_runner.py
+│       └── skill_integrator.py          # 社区 skill 集成
+├── workflows/
+│   └── research.yaml
 ├── configs/
-│   └── skills.yaml                     # ⭐ Skills 配置
-├── examples/                           # ⭐ 示例代码
-│   ├── demo_skills.py                  # Skills 演示
-│   └── feature_overview.py             # 功能概览
-├── tests/                              # ⭐ 测试代码
-│   └── test_new_features.py            # 功能验证测试
-├── README.md                           # ⭐ 更新
-├── USAGE.md                            # ⭐ 使用指南
-└── CHANGELOG.md                        # ⭐ 变更日志
+│   ├── default.yaml
+│   └── skills.yaml
+├── examples/
+│   ├── demo_skills.py
+│   └── feature_overview.py
+├── tests/
+│   └── test_new_features.py
+├── README.md
+├── USAGE.md
+├── CHANGELOG.md
+└── main.py
 ```
 
 **统计**:
-- 新增核心模块: 3 个 (skill.py, executor.py, documenter.py)
-- 新增 skills: 3 个 (code_review, dependency_check, test_generation)
-- 新增配置文件: 1 个 (skills.yaml)
-- 新增示例: 2 个 (demo_skills.py, feature_overview.py)
-- 新增测试: 1 个 (test_new_features.py)
-- 新增文档: 3 个 (README.md, USAGE.md, CHANGELOG.md)
+- 核心模块: 5 个 (agent, workflow, checkpoint, memory, skill)
+- Agents: 10 个 (planner, literature, method, coder, executor, reviewer, revision, writer, documenter, skill_hunter)
+- Skills: 8 个 (3 个代码质量 + 2 个文献论文 + 2 个实验分析 + 1 个排版)
+- 工具: 3 个 (arxiv, code_runner, skill_integrator)
+- 配置文件: 2 个 (default.yaml, skills.yaml)
 
 ---
 
-## 🔄 更新的工作流
+## 更新的工作流
 
 **文件**: `workflows/research.yaml`
 
-**完整流程** (8 个阶段):
+**完整流程** (9 个阶段，支持迭代):
 
 ```
 1. planning          选题与研究规划
-2. literature        文献调研
+2. literature        文献调研（真实 arXiv API + 智能重试）
 3. method_design     方法设计
 4. coding            代码实现
    ↓
-5. code_execution    代码执行与验证 ⭐ 新增
+5. code_execution    代码执行与验证
    ↓
 6. self_review       自我审稿
-7. paper_writing     论文撰写
    ↓
-8. documentation     文档生成 ⭐ 新增
+7. revision          迭代修订  ←┐
+   ↓                          │ (如 needs_revision=true
+8. paper_writing     论文撰写    │  则回到 coding)
+   ↓                          │
+9. documentation     文档生成  ─┘
 ```
 
 **依赖关系**:
 - `code_execution` 依赖 `coding`
+- `revision` 依赖 `self_review`，可触发 `coding` / `code_execution` 重跑
 - `documentation` 依赖 `code_execution` 和 `paper_writing`
+
+**迭代执行**: 最多 5 轮，RevisionAgent 输出 `rerun_stages` 后自动清除阶段状态并重新执行。
 
 ---
 
-## 🎯 输出结构
+## 输出结构
 
 运行完整流程后，输出结构如下：
 
 ```
 sessions/<session_id>/
-├── README.md              # ⭐ 项目文档 (新增)
+├── README.md              # 项目文档
+├── session.log            # Session 专属日志
+├── conversations/         # LLM 对话记录
+│   ├── planning.json
+│   ├── literature.json
+│   ├── method_design.json
+│   ├── coding.json
+│   ├── code_execution.json
+│   ├── self_review.json
+│   ├── revision.json
+│   ├── paper_writing.json
+│   └── documentation.json
 ├── code/                  # 代码文件
 │   ├── models/
-│   │   ├── htp_ssm.py
-│   │   ├── easr.py
-│   │   ├── msag.py
-│   │   ├── qmst.py
-│   │   ├── ksd.py
-│   │   └── vista_mamba.py
 │   ├── train.py
 │   ├── infer.py
-│   ├── utils/
-│   │   └── optical_flow.py
-│   ├── configs/
-│   │   └── default.yaml
 │   └── requirements.txt
 ├── output/
 │   └── paper.tex         # 论文草稿
-└── state.json            # 工作流状态
+├── checkpoint.json       # 工作流状态
+└── skills/               # 社区 skill 缓存
+    └── community/        # 自动获取的社区 skills
 ```
 
 ---
@@ -225,7 +297,17 @@ python examples/feature_overview.py
 
 ---
 
-## 🔧 配置
+## 配置
+
+### 社区 Skill 自动获取
+
+编辑 `configs/skills.yaml`:
+
+```yaml
+auto_skill_hunt:
+  enabled: true         # 失败时自动从社区搜索 solutions
+  max_search_attempts: 3  # 每次失败最多尝试搜索几次
+```
 
 ### 启用代码审查
 
@@ -243,7 +325,10 @@ python examples/feature_overview.py
 skills:
   code_review:
     enabled: true
-    auto_trigger: false  # 是否在 coding 阶段后自动触发
+    auto_trigger: false
+  experiment_tracker:
+    enabled: true
+    auto_trigger: true  # 在 code_execution 后自动触发
 ```
 
 ---
@@ -304,24 +389,26 @@ class MyAgent(BaseAgent):
 
 ---
 
-## 🎊 总结
+## 总结
 
 research-harness 现在是一个功能完整的端到端科研自动化框架：
 
-✅ **完整的自动化流程**: 从选题到论文撰写，再到代码执行和文档生成
-✅ **可扩展的 Skills 系统**: 轻松添加新功能，无需修改核心代码
-✅ **专业的输出**: 每个项目都有完整的 README.md 和可运行的代码
-✅ **智能的代码验证**: 自动执行测试并分析结果
-✅ **高度可配置**: 支持自定义 agents、skills 和工作流
+- **完整的自动化流程**: 从选题到论文撰写，9 阶段流水线支持迭代修订
+- **社区 Skill 自动获取**: 失败时自动搜索 GitHub/PyPI/HuggingFace，安全沙盒集成
+- **可扩展的 Skills 系统**: 8 个内置 skills + 自定义 + 社区自动发现
+- **专业的输出**: 每个项目都有完整的 README.md 和可运行的代码
+- **智能的代码验证**: 自动执行测试并分析结果，失败自动修复
+- **完善的日志系统**: 全局日志 + Per-Session 日志 + LLM 对话记录
+- **高度可配置**: 支持自定义 agents、skills 和工作流
 
-**框架已就绪，可用于实际的科研工作流！** 🚀
+**框架已就绪，可用于实际的科研工作流！**
 
 ---
 
-## 📞 支持
+## 支持
 
 - 运行测试: `python tests/test_new_features.py`
 - 查看示例: `python examples/demo_skills.py`
-- 阅读文档: `cat README.md`, `cat USAGE.md`
+- 阅读文档: `README.md`, `USAGE.md`, `CHANGELOG.md`
 
 如有问题，请查看 USAGE.md 或提交 Issue。
