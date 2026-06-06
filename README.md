@@ -2,12 +2,24 @@
 
 面向长流程科研的智能体框架，支持从选题到论文撰写的全自动化流程。
 
-## ✨ 新功能
+## ✨ 核心特性
+
+### 🔄 迭代修订系统
+- 基于审稿意见自动决定是否需要修订
+- 支持代码修订、实验补充、基线对比、写作改进
+- 自动清除已完成阶段并触发重新执行
+- 最多 5 轮迭代，防止无限循环
+
+### 🌐 社区 Skill 自动获取
+- 遇到无法解决的问题时，自动从开源社区搜索解决方案
+- 支持 GitHub、PyPI、HuggingFace 三大来源
+- 静态安全扫描 + 许可证验证 + 沙盒隔离执行
+- 配置开关 `auto_skill_hunt.enabled`，可插拔式启用
 
 ### 🔧 自主代码执行
 - 自动安装依赖并运行测试代码
 - 捕获执行日志和性能指标
-- 智能分析执行结果
+- 智能分析执行结果，失败自动修复
 
 ### 📝 自动文档生成
 - 为每个项目生成完整的 README.md
@@ -16,11 +28,16 @@
 
 ### 🎯 Skills 系统
 - 可插拔的功能模块，轻松扩展框架能力
-- 内置 3 个 skills：
+- 内置 8 个 skills：
   - **code_review**: 代码质量审查
   - **dependency_check**: 依赖检查
   - **test_generation**: 自动生成单元测试
-- 支持自定义 skills
+  - **paper_summary**: 论文结构化摘要
+  - **citation_format**: BibTeX 验证与格式化
+  - **experiment_tracker**: 实验指标追踪对比
+  - **plot_generation**: matplotlib 图表生成
+  - **latex_compile**: LaTeX 编译与错误检测
+- 支持自定义 skills + 社区 skill 自动发现
 
 ## 🚀 快速开始
 
@@ -57,30 +74,32 @@ python main.py run --direction "基于 Transformer 的时间序列预测方法"
 
 ## 📋 工作流阶段
 
-完整的研究流程包含 8 个阶段：
+完整的研究流程包含 9 个阶段：
 
 1. **planning** - 选题与研究规划
-2. **literature** - 文献调研
+2. **literature** - 文献调研（真实 arXiv API + 智能重试）
 3. **method_design** - 方法设计
 4. **coding** - 代码实现
-5. **code_execution** - 代码执行与验证 ⭐ 新增
+5. **code_execution** - 代码执行与验证
 6. **self_review** - 自我审稿
-7. **paper_writing** - 论文撰写
-8. **documentation** - 文档生成 ⭐ 新增
+7. **revision** - 迭代修订 ⭐ 新增
+8. **paper_writing** - 论文撰写
+9. **documentation** - 文档生成
 
 ## 📂 输出结构
 
 ```
 sessions/<session_id>/
 ├── README.md              # 项目文档
-├── session.log            # Session 专属日志 ⭐ 新增
-├── conversations/         # LLM 对话记录 ⭐ 新增
+├── session.log            # Session 专属日志
+├── conversations/         # LLM 对话记录
 │   ├── planning.json
 │   ├── literature.json
 │   ├── method_design.json
 │   ├── coding.json
 │   ├── code_execution.json
 │   ├── self_review.json
+│   ├── revision.json
 │   ├── paper_writing.json
 │   └── documentation.json
 ├── code/                  # 代码文件
@@ -90,7 +109,9 @@ sessions/<session_id>/
 │   └── requirements.txt
 ├── output/
 │   └── paper.tex         # 论文草稿
-└── checkpoint.json       # 工作流状态
+├── checkpoint.json       # 工作流状态
+└── skills/               # 社区 skill 缓存
+    └── community/        # 自动获取的社区 skills
 ```
 
 ### 对话记录格式
@@ -198,30 +219,40 @@ research-harness/
 ├── harness/
 │   ├── core/              # 核心组件
 │   │   ├── agent.py       # Agent 基类
-│   │   ├── workflow.py    # 工作流引擎
+│   │   ├── workflow.py    # 工作流引擎（迭代 + 自动 skill 获取）
 │   │   ├── checkpoint.py  # 状态持久化
 │   │   ├── memory.py      # 跨 session 记忆
-│   │   └── skill.py       # Skill 系统 ⭐ 新增
+│   │   └── skill.py       # Skill 系统
 │   ├── agents/            # 专职 Agents
 │   │   ├── planner.py
 │   │   ├── literature.py
 │   │   ├── method.py
 │   │   ├── coder.py
-│   │   ├── executor.py    # ⭐ 新增
+│   │   ├── executor.py
 │   │   ├── reviewer.py
+│   │   ├── revision.py    # 迭代修订
 │   │   ├── writer.py
-│   │   └── documenter.py  # ⭐ 新增
-│   ├── skills/            # Skills 模块 ⭐ 新增
+│   │   ├── documenter.py
+│   │   └── skill_hunter.py  # 社区 skill 发现
+│   ├── skills/            # Skills 模块
 │   │   ├── code_review.py
 │   │   ├── dependency_check.py
-│   │   └── test_generation.py
+│   │   ├── test_generation.py
+│   │   ├── paper_summary.py
+│   │   ├── citation_format.py
+│   │   ├── experiment_tracker.py
+│   │   ├── plot_generation.py
+│   │   └── latex_compile.py
 │   └── tools/             # 工具函数
+│       ├── arxiv.py
+│       ├── code_runner.py
+│       └── skill_integrator.py  # 社区 skill 集成
 ├── workflows/             # 工作流定义
 │   └── research.yaml
 ├── configs/               # 配置文件
 │   ├── default.yaml
-│   └── skills.yaml        # ⭐ 新增
-├── examples/              # 示例代码 ⭐ 新增
+│   └── skills.yaml
+├── examples/              # 示例代码
 └── main.py                # CLI 入口
 ```
 
@@ -241,10 +272,18 @@ agents:
 ### Skills 配置 (configs/skills.yaml)
 
 ```yaml
+# 社区 skill 自动发现与集成
+auto_skill_hunt:
+  enabled: true         # 失败时自动从社区搜索解决方案
+  max_search_attempts: 3
+
 skills:
   code_review:
     enabled: true
     auto_trigger: false
+  experiment_tracker:
+    enabled: true
+    auto_trigger: true  # 在 code_execution 后自动触发
 ```
 
 ## 📝 许可证

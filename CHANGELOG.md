@@ -218,12 +218,23 @@ research-harness/
 │   │   └── skill.py                    # ⭐ Skill 系统核心
 │   ├── agents/
 │   │   ├── executor.py                 # ⭐ 代码执行 Agent
-│   │   └── documenter.py               # ⭐ 文档生成 Agent
-│   └── skills/                         # ⭐ Skills 模块
-│       ├── __init__.py
-│       ├── code_review.py
-│       ├── dependency_check.py
-│       └── test_generation.py
+│   │   ├── documenter.py               # ⭐ 文档生成 Agent
+│   │   ├── revision.py                 # ⭐ 迭代修订 Agent (2026-06-06)
+│   │   └── skill_hunter.py             # ⭐ 社区 skill 发现 Agent (2026-06-06)
+│   ├── skills/                         # ⭐ Skills 模块
+│   │   ├── __init__.py
+│   │   ├── code_review.py
+│   │   ├── dependency_check.py
+│   │   ├── test_generation.py
+│   │   ├── paper_summary.py
+│   │   ├── citation_format.py
+│   │   ├── experiment_tracker.py
+│   │   ├── plot_generation.py
+│   │   └── latex_compile.py
+│   └── tools/
+│       ├── arxiv.py
+│       ├── code_runner.py
+│       └── skill_integrator.py          # ⭐ 社区 skill 集成 (2026-06-06)
 ├── configs/
 │   └── skills.yaml                     # ⭐ Skills 配置
 ├── examples/                           # ⭐ 示例代码
@@ -405,6 +416,86 @@ class MyAgent(BaseAgent):
 
         return output
 ```
+
+---
+
+## 🎉 新增功能（2026-06-06）
+
+### 1. 迭代修订系统
+
+**RevisionAgent** (`harness/agents/revision.py`):
+- 基于审稿意见智能决策是否需要修订
+- 支持四种修订类型：code / experiment / baseline / writing
+- 自动制定修订计划并清除已完成阶段
+- WorkflowEngine 支持迭代执行，最多 5 轮
+
+**WorkflowEngine 迭代机制**:
+- `_run_stage()` 返回 `(state, rerun_triggered)` 元组
+- RevisionAgent 输出 `rerun_stages` 后自动清除相关阶段状态
+- 立即中断当前迭代，开始新一轮执行
+- 修订后重新通过代码执行和自我审稿
+
+**工作流更新** (`workflows/research.yaml`):
+- 新增 `revision` 阶段（在 self_review 之后）
+- 完整流程：planning → literature → method_design → coding → code_execution → self_review → **revision** → paper_writing → documentation
+
+### 2. 社区 Skill 自动获取系统
+
+**SkillHunterAgent** (`harness/agents/skill_hunter.py`):
+- 分析失败原因，识别缺失的能力
+- 从 GitHub / PyPI / HuggingFace 搜索相关工具
+- 评估候选 skill 的质量、安全性、兼容性
+- 输出结构化推荐（含搜索关键词、集成策略、风险评估）
+
+**SkillIntegrator** (`harness/tools/skill_integrator.py`):
+- **下载模块**：
+  - GitHub: git clone 或 zip 下载，支持单文件和完整仓库
+  - PyPI: pip install 到隔离目录
+  - HuggingFace: huggingface_hub 下载（自动跳过大权重文件），备选 HTTP 下载
+  - 通用 URL 直链下载
+- **安全模块**：
+  - 静态 AST 扫描：检测 os/subprocess/socket/ctypes/eval/exec/compile 等危险调用
+  - 许可证验证：MIT/Apache/BSD 可信，GPL/AGPL 警告，无许可证标记
+  - 文件大小限制：单文件最大 10MB
+- **沙盒执行**：
+  - 隔离子进程执行，受限 builtins（阻止 socket/ctypes/code/multiprocessing）
+  - 60s 超时保护
+  - 通过 stdout 标记协议传递结果
+- **生命周期管理**：
+  - `install/remove/list` 社区 skills
+  - manifest.json 持久化管理
+  - CommunitySkill 动态 wrapper
+
+**WorkflowEngine 自动触发** (`harness/core/workflow.py`):
+- 新增 `auto_skill_hunt` 参数控制自动搜索开关
+- `_try_auto_resolve()` 方法：失败后自动调用 SkillHunter → SkillIntegrator
+- 集成成功后自动刷新 SkillRegistry 并重置失败阶段重试
+- 异常安全：ImportError 等异常静默降级，不影响正常流程
+
+**配置更新** (`configs/skills.yaml`):
+```yaml
+auto_skill_hunt:
+  enabled: true         # 失败时自动从社区搜索
+  max_search_attempts: 3
+```
+
+### 3. 真实数据与文献增强
+
+**arXiv API 集成** (`harness/tools/arxiv.py`):
+- 真实 arXiv API 调用（非模拟）
+- 指数退避重试（1s → 2s → 4s），处理 429 限流
+- 按项目/方法/任务三维度搜索
+
+**数据集路径注入**:
+- ExecutorAgent 通过环境变量 `DATASET_PATH` 传递数据集路径
+- 消除硬编码路径和示例数据依赖
+
+### 4. 代码质量保障
+
+**自动修复循环**:
+- LLM 驱动的测试失败检测和修复
+- 最多 N 轮自动修复迭代
+- 逐文件写入和测试运行
 
 ---
 
