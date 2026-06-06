@@ -1,6 +1,11 @@
 # Skills 配置文件
 # 定义可用的 skills 及其参数
 
+# 社区 skill 自动发现与集成
+auto_skill_hunt:
+  enabled: true         # 失败时自动从社区搜索 solutions
+  max_search_attempts: 3  # 每次失败最多尝试搜索几次
+
 skills:
   # === 代码质量 ===
   code_review:

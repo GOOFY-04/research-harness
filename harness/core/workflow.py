@@ -54,11 +54,13 @@ class WorkflowEngine:
         checkpoint: CheckpointManager,
         agent_registry: dict[str, Any],  # agent_name -> agent 实例
         skill_registry: Optional[Any] = None,  # SkillRegistry 实例
+        auto_skill_hunt: bool = False,  # 失败时自动搜索社区 skills
     ):
         self.spec = self._load_spec(workflow_path)
         self.checkpoint = checkpoint
         self.agents = agent_registry
         self.skill_registry = skill_registry
+        self.auto_skill_hunt = auto_skill_hunt
         self._stage_map = {s.id: s for s in self.spec.stages}
 
     # ------------------------------------------------------------------
@@ -194,6 +196,17 @@ class WorkflowEngine:
                     agent.save_conversations(session_dir, stage.id)
                 if attempt >= stage.max_retries:
                     state = self.checkpoint.mark_stage_failed(state, stage.id, error_msg)
+
+                    # 自动社区 skill 获取：失败后尝试从开源社区寻找解决方案
+                    if self.auto_skill_hunt:
+                        resolved = self._try_auto_resolve(stage, error_msg, state)
+                        if resolved:
+                            logger.info(f"[{stage.id}] 社区 skill 集成成功，重置阶段重试")
+                            state["stages"][stage.id] = {"status": StageStatus.PENDING, "attempts": 0}
+                            self.checkpoint.save(state)
+                            rerun_triggered = True
+                            return state, rerun_triggered
+
                     return state, rerun_triggered
 
         return state, rerun_triggered
@@ -268,3 +281,50 @@ class WorkflowEngine:
         if self.skill_registry is None:
             return []
         return self.skill_registry.list_skills()
+
+    def _try_auto_resolve(self, stage: StageSpec, error_msg: str, state: dict) -> bool:
+        """
+        在阶段失败后自动调用 SkillHunter → SkillIntegrator 全流程。
+
+        尝试从社区获取新 skills 来解决问题，集成成功后返回 True。
+
+        Args:
+            stage: 失败的阶段
+            error_msg: 错误信息
+            state: 工作流状态
+
+        Returns:
+            True 如果成功集成了新的 skill
+        """
+        try:
+            from harness.tools.skill_integrator import auto_resolve_failure
+
+            # 收集上下文
+            task_description = f"Stage: {stage.id} ({stage.name}), Agent: {stage.agent}, Error: {error_msg}"
+            existing_skills = self.list_skills()
+
+            logger.info(f"[{stage.id}] 启动自动社区 skill 搜索...")
+            result = auto_resolve_failure(
+                stage_id=stage.id,
+                error_msg=error_msg,
+                task_description=task_description,
+                existing_skills=existing_skills,
+            )
+
+            if result and result["success"]:
+                # 刷新 skill_registry 引用
+                if self.skill_registry is not None:
+                    from harness.core.skill import get_global_registry
+                    self.skill_registry = get_global_registry()
+                logger.info(f"[{stage.id}] 社区 skill 集成成功: {result['skill_name']}")
+                return True
+
+            logger.info(f"[{stage.id}] 未找到合适的社区 skill")
+            return False
+
+        except ImportError as e:
+            logger.warning(f"[{stage.id}] SkillIntegrator 导入失败: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"[{stage.id}] 自动社区 skill 搜索异常: {e}")
+            return False

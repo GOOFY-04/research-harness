@@ -35,6 +35,7 @@ from harness.agents import (
     ReviewerAgent,
     RevisionAgent,
     WriterAgent,
+    SkillHunterAgent,
 )
 from harness.agents.executor import ExecutorAgent
 from harness.agents.documenter import DocumenterAgent
@@ -102,11 +103,14 @@ def build_agent_registry(config: dict, memory: MemoryStore) -> dict:
         "writer":     make(WriterAgent,     "writer"),
         "executor":   make(ExecutorAgent,   "executor", timeout=600),
         "documenter": make(DocumenterAgent, "documenter"),
+        "skill_hunter": make(SkillHunterAgent, "skill_hunter"),
     }
 
 
-def setup_skills(skills_config: dict | None = None) -> None:
-    """根据配置注册 skills 到全局注册表。仅注册 enabled=true 的 skill。"""
+def setup_skills(skills_config: dict | None = None) -> dict:
+    """根据配置注册 skills 到全局注册表。仅注册 enabled=true 的 skill。
+    返回完整的 skills 配置字典（包括 auto_skill_hunt 等全局设置）。
+    """
     # 加载 skills 配置（如果未传入，尝试从 configs/skills.yaml 加载）
     if skills_config is None:
         skills_yaml = Path(__file__).parent / "configs" / "skills.yaml"
@@ -140,6 +144,7 @@ def setup_skills(skills_config: dict | None = None) -> None:
             logging.info(f"[main] skill '{name}' 已在配置中禁用，跳过注册")
 
     logging.info(f"[main] 已注册 {registered} 个 skills")
+    return skills_config
 
 
 # ------------------------------------------------------------------
@@ -153,7 +158,7 @@ def cmd_run(args, config: dict) -> None:
     agents = build_agent_registry(config, memory)
 
     # 设置 skills（按 skills.yaml 中的 enabled 标记过滤）
-    setup_skills(config.get("skills"))
+    skills_config = setup_skills(config.get("skills"))
     skill_registry = get_global_registry()
 
     checkpoint = CheckpointManager(
@@ -173,7 +178,8 @@ def cmd_run(args, config: dict) -> None:
 
     # 将研究方向注入 planning 阶段的 inputs
     workflow_path = args.workflow or config["workflow"]["default"]
-    engine = WorkflowEngine(workflow_path, checkpoint, agents, skill_registry)
+    auto_skill_hunt = skills_config.get("auto_skill_hunt", {}).get("enabled", False) if skills_config else False
+    engine = WorkflowEngine(workflow_path, checkpoint, agents, skill_registry, auto_skill_hunt=auto_skill_hunt)
 
     # 把 research_direction 注入到 planning 阶段
     # 通过在 state.metadata 中预置，再在 PlannerAgent.build_prompt 里读取
