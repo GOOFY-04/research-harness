@@ -33,6 +33,7 @@ class CoderAgent(BaseAgent):
         components = inputs.get("components", [])
         algorithm = inputs.get("algorithm", "")
         overview = inputs.get("overview", "")
+        interface_manifest = inputs.get("interface_manifest", {})
 
         context = f"""方法名称：{method_name}
 方法概述：{overview}
@@ -40,6 +41,11 @@ class CoderAgent(BaseAgent):
 {json.dumps(components, ensure_ascii=False, indent=2)}
 算法伪代码：
 {algorithm}"""
+
+        # 构建接口契约摘要（注入到 prompt 中）
+        contract_text = self._format_contract(interface_manifest)
+        if contract_text:
+            context += f"\n\n=== 接口契约（必须严格遵守） ===\n{contract_text}"
 
         # ------------------------------------------------------------------
         # 第1轮：获取文件清单（只要路径和描述，不要内容）
@@ -84,6 +90,9 @@ class CoderAgent(BaseAgent):
             desc = file_info.get("description", "")
             logger.info(f"[CoderAgent] 生成文件 ({i+1}/{len(file_list)}): {path}")
 
+            # 提取与本文件相关的接口契约
+            file_contract = self._get_file_contract(path, interface_manifest, file_list)
+
             file_prompt = f"""请为以下文件生成完整的 Python 代码。
 
 项目背景：
@@ -95,12 +104,14 @@ class CoderAgent(BaseAgent):
 
 已规划的其他文件：
 {json.dumps([f['path'] for f in file_list if f['path'] != path], ensure_ascii=False)}
-
+{file_contract}
 要求：
 1. 代码完整可运行，包含所有 import
 2. 包含类型注解和 docstring
 3. 如果是模型文件，确保 forward() 方法完整
-4. 不要输出 JSON，直接输出 Python 代码（用 ```python 围栏包裹）"""
+4. **严格遵守接口契约中的类名、方法名、参数名（不得自行变更）**
+5. 从其他文件导入时，使用契约中规定的精确名称
+6. 不要输出 JSON，直接输出 Python 代码（用 ```python 围栏包裹）"""
 
             code_raw = self._call_llm(file_prompt)
 
@@ -134,3 +145,80 @@ class CoderAgent(BaseAgent):
 
     def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:
         return self._parse_json(raw_text)
+
+    # ========================================================================
+    # 接口契约辅助方法
+    # ========================================================================
+
+    @staticmethod
+    def _format_contract(manifest: dict) -> str:
+        """将 interface_manifest 格式化为可嵌入 prompt 的文本。"""
+        if not manifest:
+            return ""
+
+        lines = []
+        modules = manifest.get("modules", [])
+        if modules:
+            lines.append("【模块接口定义 - 必须精确遵守】")
+            for m in modules:
+                fname = m.get("file", "?")
+                desc = m.get("description", "")
+                lines.append(f"\n# {fname} — {desc}")
+                for exp in m.get("exports", []):
+                    lines.append(f"  {exp}")
+
+        contracts = manifest.get("cross_file_contracts", {})
+        if contracts:
+            lines.append("\n【跨文件导入关系 - 必须精确遵守】")
+            for file_name, imports in contracts.items():
+                lines.append(f"\n{file_name}:")
+                for imp in imports:
+                    lines.append(f"  {imp}")
+
+        data_fmt = manifest.get("data_format", {})
+        if data_fmt:
+            lines.append("\n【数据格式约定】")
+            for k, v in data_fmt.items():
+                lines.append(f"  {k}: {v}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _get_file_contract(
+        file_path: str, manifest: dict, file_list: list
+    ) -> str:
+        """提取与当前文件相关的接口契约片段。"""
+        if not manifest:
+            return ""
+
+        parts = []
+
+        # 本文件的导出定义
+        modules = manifest.get("modules", [])
+        for m in modules:
+            if m.get("file") == file_path or m.get("file") in file_path:
+                exports = m.get("exports", [])
+                if exports:
+                    parts.append(
+                        f"\n**本文件必须导出以下接口（类名/方法名/参数名不得修改）：**\n"
+                        + "\n".join(f"  - {e}" for e in exports)
+                    )
+
+        # 本文件需要从其他文件导入的内容
+        contracts = manifest.get("cross_file_contracts", {})
+        file_imports = contracts.get(file_path, [])
+        if file_imports:
+            parts.append(
+                f"\n**本文件必须使用以下精确的导入语句：**\n"
+                + "\n".join(f"  {imp}" for imp in file_imports)
+            )
+
+        # 数据格式
+        data_fmt = manifest.get("data_format", {})
+        if data_fmt and ("dataset" in file_path.lower() or "data" in file_path.lower()):
+            parts.append(
+                "\n**数据格式约定（必须遵守）：**\n"
+                + "\n".join(f"  {k}: {v}" for k, v in data_fmt.items())
+            )
+
+        return "\n".join(parts) if parts else ""

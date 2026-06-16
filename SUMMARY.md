@@ -2,13 +2,48 @@
 
 ## 总览
 
-已成功为 research-harness 添加了五大核心功能，使其成为一个完整的端到端科研自动化框架。
+已成功为 research-harness 添加了六大核心功能，使其成为一个完整的端到端科研自动化框架。
 
 ---
 
 ## 新增功能
 
-### 1. 迭代修订系统 (RevisionAgent)
+### 1. 实验训练循环 (ExperimentLoopAgent) ⭐ NEW
+
+**文件**: `harness/agents/experiment_loop.py`
+
+**功能**:
+- 启动 GPU 训练子进程（非阻塞 Popen），支持长时间运行
+- 定期轮询训练输出（可配置间隔），从日志中提取指标（loss、accuracy、MAE、RMSE 等）
+- 多种智能退出条件，任一满足即优雅终止：
+  - `max_epochs`: 达到最大训练轮数
+  - `target_loss`: 损失降至目标值以下
+  - `patience`: 连续 N 轮无改善（早停）
+  - `max_time`: 超过最大运行时间
+  - `target_metric`: 指定指标达到阈值
+- 使用 LLM 分析实验结果（收敛性、最佳结果、改进建议）
+- 优雅终止：先 SIGTERM，10s 后 SIGKILL
+- 支持自定义正则模式提取训练日志中的指标
+
+**工作流位置**: `code_execution` → **`experiment_loop`** → `self_review`
+
+**配置**:
+```yaml
+agents:
+  experiment_loop:
+    check_interval: 60          # 轮询间隔（秒）
+    max_epochs: 100             # 最大 epoch
+    target_loss: null           # 目标损失
+    patience: 5                 # 早停耐心
+    max_time: 86400             # 最大运行时间
+    monitor_metric: "loss"      # 主监控指标
+```
+
+**API 配置**: 主 API 切换为 **agnes-2.0-flash** (OpenAI 兼容)，DeepSeek V4 Pro 作为 Fallback。
+
+---
+
+### 2. 迭代修订系统 (RevisionAgent)
 
 **文件**: `harness/agents/revision.py`
 
@@ -22,7 +57,7 @@
 
 ---
 
-### 2. 社区 Skill 自动获取系统
+### 3. 社区 Skill 自动获取系统
 
 **SkillHunterAgent** (`harness/agents/skill_hunter.py`):
 - 分析失败原因，识别缺失的能力
@@ -43,7 +78,7 @@
 
 ---
 
-### 3. 自主代码执行 (ExecutorAgent)
+### 4. 自主代码执行 (ExecutorAgent)
 
 **文件**: `harness/agents/executor.py`
 
@@ -58,7 +93,7 @@
 
 ---
 
-### 2️⃣ 自动文档生成 (DocumenterAgent)
+### 5. 自动文档生成 (DocumenterAgent)
 
 **文件**: `harness/agents/documenter.py`
 
@@ -73,7 +108,7 @@
 
 ---
 
-### 3️⃣ Skills 系统
+### 6. Skills 系统
 
 **核心文件**: `harness/core/skill.py`
 
@@ -125,6 +160,7 @@ research-harness/
 │   │   ├── method.py
 │   │   ├── coder.py
 │   │   ├── executor.py
+│   │   ├── experiment_loop.py         # 实验训练循环
 │   │   ├── reviewer.py
 │   │   ├── revision.py                 # 迭代修订
 │   │   ├── writer.py
@@ -161,7 +197,7 @@ research-harness/
 
 **统计**:
 - 核心模块: 5 个 (agent, workflow, checkpoint, memory, skill)
-- Agents: 10 个 (planner, literature, method, coder, executor, reviewer, revision, writer, documenter, skill_hunter)
+- Agents: 11 个 (planner, literature, method, coder, executor, experiment_loop, reviewer, revision, writer, documenter, skill_hunter)
 - Skills: 8 个 (3 个代码质量 + 2 个文献论文 + 2 个实验分析 + 1 个排版)
 - 工具: 3 个 (arxiv, code_runner, skill_integrator)
 - 配置文件: 2 个 (default.yaml, skills.yaml)
@@ -172,7 +208,7 @@ research-harness/
 
 **文件**: `workflows/research.yaml`
 
-**完整流程** (9 个阶段，支持迭代):
+**完整流程** (10 个阶段，支持迭代):
 
 ```
 1. planning          选题与研究规划
@@ -182,19 +218,23 @@ research-harness/
    ↓
 5. code_execution    代码执行与验证
    ↓
-6. self_review       自我审稿
+6. experiment_loop   实验训练循环  ← 监控训练、智能退出
    ↓
-7. revision          迭代修订  ←┐
+7. self_review       自我审稿（含实验结果）
+   ↓
+8. revision          迭代修订  ←┐
    ↓                          │ (如 needs_revision=true
-8. paper_writing     论文撰写    │  则回到 coding)
+9. paper_writing     论文撰写    │  则回到 coding)
    ↓                          │
-9. documentation     文档生成  ─┘
+10. documentation    文档生成  ─┘
 ```
 
 **依赖关系**:
-- `code_execution` 依赖 `coding`
+- `experiment_loop` 依赖 `code_execution`
+- `self_review` 依赖 `method_design` + `literature` + **`experiment_loop`**
 - `revision` 依赖 `self_review`，可触发 `coding` / `code_execution` 重跑
-- `documentation` 依赖 `code_execution` 和 `paper_writing`
+- `paper_writing` 依赖 `revision` + **`experiment_loop`**（为 Experiments 节提供数据）
+- `documentation` 依赖 `code_execution` + `experiment_loop` + `paper_writing`
 
 **迭代执行**: 最多 5 轮，RevisionAgent 输出 `rerun_stages` 后自动清除阶段状态并重新执行。
 
@@ -214,6 +254,7 @@ sessions/<session_id>/
 │   ├── method_design.json
 │   ├── coding.json
 │   ├── code_execution.json
+│   ├── experiment_loop.json
 │   ├── self_review.json
 │   ├── revision.json
 │   ├── paper_writing.json
@@ -393,7 +434,7 @@ class MyAgent(BaseAgent):
 
 research-harness 现在是一个功能完整的端到端科研自动化框架：
 
-- **完整的自动化流程**: 从选题到论文撰写，9 阶段流水线支持迭代修订
+- **完整的自动化流程**: 从选题到论文撰写，10 阶段流水线支持迭代修订和自动化实验训练
 - **社区 Skill 自动获取**: 失败时自动搜索 GitHub/PyPI/HuggingFace，安全沙盒集成
 - **可扩展的 Skills 系统**: 8 个内置 skills + 自定义 + 社区自动发现
 - **专业的输出**: 每个项目都有完整的 README.md 和可运行的代码

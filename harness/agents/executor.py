@@ -22,6 +22,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,17 +36,23 @@ class ExecutorAgent(BaseAgent):
     model = "claude-sonnet-4-6"
     max_tokens = 8192
 
-    def __init__(self, *args, timeout: int = 600, enable_code_review: bool = False, max_fix_attempts: int = 3, **kwargs):
+    def __init__(self, *args, timeout: int = 600, enable_code_review: bool = False,
+                 max_fix_attempts: int = 3, dep_install_timeout: int = 7200,
+                 dep_install_retries: int = 2, **kwargs):
         """
         Args:
             timeout: 代码执行超时时间（秒），默认 10 分钟
             enable_code_review: 是否启用代码审查 skill
             max_fix_attempts: 测试失败时最大自动修复次数
+            dep_install_timeout: 依赖安装超时（秒），默认 7200（2h）
+            dep_install_retries: 依赖安装失败最大重试次数，默认 2
         """
         super().__init__(*args, **kwargs)
         self.timeout = timeout
         self.enable_code_review = enable_code_review
         self.max_fix_attempts = max_fix_attempts
+        self.dep_install_timeout = dep_install_timeout
+        self.dep_install_retries = dep_install_retries
 
     def build_prompt(self, stage_id: str, inputs: dict, state: dict) -> str:
         return ""  # 不使用标准 prompt，在 run() 中自定义
@@ -160,32 +167,77 @@ class ExecutorAgent(BaseAgent):
             file_path.write_text(file_info["content"], encoding="utf-8")
 
     def _install_dependencies(self, code_dir: Path, dependencies: str) -> tuple[str, bool]:
-        """安装依赖，返回 (日志, 是否成功)"""
+        """安装依赖，支持长时间超时和自动重试。返回 (日志, 是否成功)"""
         if not dependencies:
             return "", True
 
-        logger.info(f"[ExecutorAgent] 安装依赖...")
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
-                cwd=code_dir,
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 分钟超时
+        # 智能替换：将已知不可 pip 安装的包替换为替代品
+        import re as _re
+        PACKAGE_ALTERNATIVES = {
+            "diff-gaussian-rasterization": "gsplat",
+            "simple-knn": "torch-cluster",
+        }
+        for bad_pkg, alt in PACKAGE_ALTERNATIVES.items():
+            if bad_pkg in dependencies:
+                # 替换整个依赖声明（含版本号、@git+URL 等后缀）
+                dependencies = _re.sub(
+                    rf'{_re.escape(bad_pkg)}(\s*[@><=!~;].*?(?=\n|$))?',
+                    alt,
+                    dependencies,
+                    flags=_re.MULTILINE,
+                )
+                logger.info(f"[ExecutorAgent] 替换依赖: {bad_pkg} → {alt}")
+        (code_dir / "requirements.txt").write_text(dependencies, encoding="utf-8")
+
+        full_log = ""
+        for attempt in range(self.dep_install_retries + 1):
+            if attempt > 0:
+                wait_s = min(30 * attempt, 120)
+                logger.info(
+                    f"[ExecutorAgent] 依赖安装重试 {attempt}/{self.dep_install_retries}，等待 {wait_s}s..."
+                )
+                time.sleep(wait_s)
+
+            logger.info(
+                f"[ExecutorAgent] 安装依赖 (attempt {attempt+1}/{self.dep_install_retries+1}, "
+                f"timeout={self.dep_install_timeout}s)..."
             )
-            install_log = result.stdout + result.stderr
-            if result.returncode != 0:
-                logger.warning(f"[ExecutorAgent] 依赖安装失败: {result.stderr[:200]}")
-                return install_log, False
-            return install_log, True
-        except subprocess.TimeoutExpired:
-            msg = "依赖安装超时（10分钟）"
-            logger.warning(f"[ExecutorAgent] {msg}")
-            return msg, False
-        except Exception as e:
-            msg = f"依赖安装异常: {e}"
-            logger.warning(f"[ExecutorAgent] {msg}")
-            return msg, False
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
+                    cwd=code_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.dep_install_timeout,
+                )
+                install_log = result.stdout + result.stderr
+                full_log += install_log
+                if result.returncode != 0:
+                    logger.warning(
+                        f"[ExecutorAgent] 依赖安装失败 (attempt {attempt+1}): "
+                        f"{result.stderr[:200]}"
+                    )
+                    if attempt < self.dep_install_retries:
+                        continue
+                    return full_log, False
+                logger.info(f"[ExecutorAgent] 依赖安装成功")
+                return full_log, True
+            except subprocess.TimeoutExpired:
+                msg = f"依赖安装超时 ({self.dep_install_timeout}s)\n"
+                full_log += msg
+                logger.warning(f"[ExecutorAgent] {msg.strip()}")
+                if attempt < self.dep_install_retries:
+                    continue
+                return full_log, False
+            except Exception as e:
+                msg = f"依赖安装异常: {e}\n"
+                full_log += msg
+                logger.warning(f"[ExecutorAgent] {msg.strip()}")
+                if attempt < self.dep_install_retries:
+                    continue
+                return full_log, False
+
+        return full_log, False
 
     def _run_test_with_autofix(
         self,

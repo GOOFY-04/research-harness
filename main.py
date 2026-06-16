@@ -36,6 +36,7 @@ from harness.agents import (
     RevisionAgent,
     WriterAgent,
     SkillHunterAgent,
+    ExperimentLoopAgent,
 )
 from harness.agents.executor import ExecutorAgent
 from harness.agents.documenter import DocumenterAgent
@@ -82,6 +83,9 @@ def build_agent_registry(config: dict, memory: MemoryStore) -> dict:
     api_key = config["anthropic"].get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
     agent_cfg = config.get("agents", {})
 
+    # 标准 Agent 参数（不从 YAML 透传）
+    _std_agent_keys = {"use_extended_thinking", "thinking_budget"}
+
     def make(cls, name: str, **extra_kwargs):
         cfg = agent_cfg.get(name, {})
         kwargs = {
@@ -90,6 +94,10 @@ def build_agent_registry(config: dict, memory: MemoryStore) -> dict:
             "use_extended_thinking": cfg.get("use_extended_thinking", False),
             "thinking_budget": cfg.get("thinking_budget", 5000),
         }
+        # 透传 YAML 中的 Agent 专属参数（如 experiment_loop 的 check_interval 等）
+        for k, v in cfg.items():
+            if k not in _std_agent_keys and k not in kwargs:
+                kwargs[k] = v
         kwargs.update(extra_kwargs)
         return cls(**kwargs)
 
@@ -101,9 +109,10 @@ def build_agent_registry(config: dict, memory: MemoryStore) -> dict:
         "reviewer":   make(ReviewerAgent,   "reviewer"),
         "revision":   make(RevisionAgent,   "revision"),
         "writer":     make(WriterAgent,     "writer"),
-        "executor":   make(ExecutorAgent,   "executor", timeout=600),
-        "documenter": make(DocumenterAgent, "documenter"),
-        "skill_hunter": make(SkillHunterAgent, "skill_hunter"),
+        "executor":        make(ExecutorAgent,        "executor", timeout=600),
+        "experiment_loop": make(ExperimentLoopAgent,  "experiment_loop"),
+        "documenter":      make(DocumenterAgent,      "documenter"),
+        "skill_hunter":    make(SkillHunterAgent,    "skill_hunter"),
     }
 
 
@@ -268,15 +277,16 @@ def cmd_repair(args, config: dict) -> None:
     memory = MemoryStore(paths["memory_dir"])
     agents = build_agent_registry(config, memory)
     agent_map = {
-        "planning":     agents["planner"],
-        "literature":   agents["literature"],
-        "method_design":  agents["method"],
-        "coding":         agents["coder"],
-        "self_review":    agents["reviewer"],
-        "revision":       agents["revision"],
-        "paper_writing":  agents["writer"],
-        "code_execution": agents["executor"],
-        "documentation":  agents["documenter"],
+        "planning":        agents["planner"],
+        "literature":      agents["literature"],
+        "method_design":   agents["method"],
+        "coding":          agents["coder"],
+        "self_review":     agents["reviewer"],
+        "revision":        agents["revision"],
+        "paper_writing":   agents["writer"],
+        "code_execution":  agents["executor"],
+        "experiment_loop": agents["experiment_loop"],
+        "documentation":   agents["documenter"],
     }
 
     repaired = []

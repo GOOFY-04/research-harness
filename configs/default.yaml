@@ -33,6 +33,22 @@ agents:
     use_extended_thinking: false
   writer:
     use_extended_thinking: false
+  experiment_loop:
+    check_interval: 60          # 轮询训练状态间隔（秒）
+    max_epochs: 100             # 最大训练 epoch
+    target_loss: null           # 目标损失（null=不使用）
+    patience: 5                 # 早停耐心值（连续无改善轮询次数）
+    max_time: 86400             # 最大运行时间（秒，默认24h）
+    monitor_metric: "loss"      # 主监控指标
+    dep_install_timeout: 7200   # 依赖安装单次超时（秒，2h）
+    dep_install_max_retries: 3  # 依赖安装最大重试次数
+    auto_fix_imports: true      # 自动 LLM 修复导入错误
+    preflight_check: true       # 训练前导入预检
+    max_train_retries: 5        # 训练失败后自动修复+重试次数
+    retry_cooldown: 10          # 重试间隔冷却（秒）
+    # CLI 参数自动注入：将 state 字段映射为训练脚本的命令行参数
+    # cli_arg_map: { "data_root": "dataset_path", "epochs": null }
+    # extra_train_args: ["--batch_size", "2", "--lr", "1e-4"]
 
 # 日志
 logging:
