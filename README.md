@@ -4,6 +4,13 @@
 
 ## ✨ 核心特性
 
+### 🔬 实验训练循环 ⭐ NEW
+- 启动 GPU 训练子进程并定期轮询状态
+- 多种智能退出条件：max_epochs、target_loss、patience、max_time、target_metric
+- 从训练日志中自动提取指标（loss、accuracy、MAE 等）
+- 使用 LLM 分析实验结果（收敛性、最佳结果、改进建议）
+- 实验结果自动注入论文撰写和文档生成阶段
+
 ### 🔄 迭代修订系统
 - 基于审稿意见自动决定是否需要修订
 - 支持代码修订、实验补充、基线对比、写作改进
@@ -74,17 +81,18 @@ python main.py run --direction "基于 Transformer 的时间序列预测方法"
 
 ## 📋 工作流阶段
 
-完整的研究流程包含 9 个阶段：
+完整的研究流程包含 10 个阶段：
 
 1. **planning** - 选题与研究规划
 2. **literature** - 文献调研（真实 arXiv API + 智能重试）
 3. **method_design** - 方法设计
 4. **coding** - 代码实现
 5. **code_execution** - 代码执行与验证
-6. **self_review** - 自我审稿
-7. **revision** - 迭代修订 ⭐ 新增
-8. **paper_writing** - 论文撰写
-9. **documentation** - 文档生成
+6. **experiment_loop** - 实验训练循环 ⭐ 新增（监控训练、智能退出）
+7. **self_review** - 自我审稿
+8. **revision** - 迭代修订
+9. **paper_writing** - 论文撰写
+10. **documentation** - 文档生成
 
 ## 📂 输出结构
 

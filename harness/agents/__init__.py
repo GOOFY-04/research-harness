@@ -8,6 +8,7 @@ from .writer import WriterAgent
 from .executor import ExecutorAgent
 from .documenter import DocumenterAgent
 from .skill_hunter import SkillHunterAgent
+from .experiment_loop import ExperimentLoopAgent
 
 __all__ = [
     "PlannerAgent",
@@ -20,4 +21,5 @@ __all__ = [
     "ExecutorAgent",
     "DocumenterAgent",
     "SkillHunterAgent",
+    "ExperimentLoopAgent",
 ]

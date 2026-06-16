@@ -1,5 +1,50 @@
 # research-harness 功能增强总结
 
+## 🎉 新增功能 (2026-06-07)
+
+### ExperimentLoopAgent — 实验训练循环 ⭐
+
+**位置**: `harness/agents/experiment_loop.py`
+
+**功能**:
+- 启动训练子进程（非阻塞 Popen），支持长时间 GPU 训练
+- 定期轮询训练输出（可配置间隔），从日志中提取指标（loss、accuracy、MAE、RMSE 等）
+- 多种智能退出条件，任一满足即优雅终止：
+  - `max_epochs`: 达到最大训练轮数
+  - `target_loss`: 损失降至目标值以下
+  - `patience`: 连续 N 轮无改善（早停）
+  - `max_time`: 超过最大运行时间
+  - `target_metric`: 指定指标达到阈值
+- 使用 LLM 分析实验结果（收敛性、最佳结果、建议）
+- 支持自定义正则模式提取训练日志中的指标
+- 优雅终止：先 SIGTERM，10s 后 SIGKILL
+
+**Workflow 集成**:
+- `experiment_loop` 阶段位于 `code_execution` 之后、`self_review` 之前
+- 实验结果自动注入到 self_review、paper_writing、documentation 阶段
+- self_review 现在依赖 [method_design, literature, **experiment_loop**]
+
+**配置** (`configs/default.yaml`):
+```yaml
+agents:
+  experiment_loop:
+    check_interval: 60          # 轮询训练状态间隔（秒）
+    max_epochs: 100             # 最大训练 epoch
+    target_loss: null           # 目标损失（null=不使用）
+    patience: 5                 # 早停耐心值
+    max_time: 86400             # 最大运行时间（秒）
+    monitor_metric: "loss"      # 主监控指标
+```
+
+**YAML 配置透传**: `main.py` 的 `make()` 函数现已自动将 YAML 中 `agents.<name>` 的非标准参数透传到 Agent 构造函数，支持任意 Agent 的专属配置。
+
+### API 切换
+
+- 主 API 切换回 **agnes-2.0-flash** (OpenAI 兼容)
+- DeepSeek V4 Pro 改为 Fallback 选项
+
+---
+
 ## 🎉 新增功能
 
 ### 1. Per-Session 日志与对话记录 ⭐
