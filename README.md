@@ -75,6 +75,8 @@ bun run dev:harness
 
 现在通过 `/research-board` 打开原生终端研究工作台。宽屏按“研究会话 / 实验流水线 / 证据账本”三栏组织，紧凑窗口隐藏会话栏，窄窗口改为纵向滚动。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置都在主视图中直接显示；执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、L 日志、U 恢复、X 重置、Esc 返回聊天。
 
+OpenCode CLI 首页也使用 Research Harness 作为主信息架构：从“问题 → 流水线 → 证据 → 审查”开始，展示 checkpoint 可恢复、证据门控和结论边界三项研究契约，并读取真实 checkpoint 汇总当前需要关注的实验。首页输入框优先引导用户声明可证伪问题及所需证据，而不是直接要求生成结论。
+
 接入架构由 `harness/research_service.py` 和 `opencode-fork/packages/research/` 组成。研究服务调用既有 CLI 和 WorkflowEngine，OpenCode 负责交互；checkpoint 是阶段状态的唯一来源。`run/resume/repair/reset-stage` 立即返回后台任务的接收结果，**不表示研究已完成**。关闭聊天或看板后，已接收的研究任务继续运行。当前版本没有停止后台任务的 UI 命令。
 
 新建研究可选择快速验证、完整实验或 SfM 严格配置；该配置随后台任务保存，恢复时沿用。旧 CLI 会话没有配置记录，首次通过服务恢复时应显式指定原配置。harness 继续使用本目录的 `.env`，无需向 fork 复制 API 凭据。
