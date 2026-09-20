@@ -9,6 +9,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from .io import atomic_json, file_lock, safe_path
+import hashlib
 
 
 class MemoryStore:
@@ -21,8 +23,12 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _topic_file(self, topic: str) -> Path:
-        safe = topic.replace("/", "_").replace(" ", "_")
-        return self.memory_dir / f"{safe}.json"
+        import re
+        safe = topic if re.fullmatch(r"[A-Za-z0-9_-]+", topic) else hashlib.sha256(topic.encode()).hexdigest()
+        try:
+            return safe_path(self.memory_dir, f"{safe}.json")
+        except ValueError:
+            return safe_path(self.memory_dir, hashlib.sha256(topic.encode()).hexdigest() + ".json")
 
     def _load_topic(self, topic: str) -> dict:
         f = self._topic_file(topic)
@@ -32,8 +38,7 @@ class MemoryStore:
             return json.load(fp)
 
     def _save_topic(self, topic: str, data: dict) -> None:
-        with open(self._topic_file(topic), "w", encoding="utf-8") as fp:
-            json.dump(data, fp, ensure_ascii=False, indent=2)
+        atomic_json(self._topic_file(topic), data)
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -41,13 +46,14 @@ class MemoryStore:
 
     def append(self, topic: str, content: Any, tags: Optional[list[str]] = None) -> None:
         """向某个 topic 追加一条记忆。"""
-        data = self._load_topic(topic)
-        data["entries"].append({
-            "content": content,
-            "tags": tags or [],
-            "created_at": datetime.now().isoformat(),
-        })
-        self._save_topic(topic, data)
+        with file_lock(self._topic_file(topic).with_suffix(".lock"), timeout=5):
+            data = self._load_topic(topic)
+            data["entries"].append({
+                "content": content,
+                "tags": tags or [],
+                "created_at": datetime.now().isoformat(),
+            })
+            self._save_topic(topic, data)
 
     def get_all(self, topic: str) -> list[dict]:
         """获取某个 topic 的所有记忆条目。"""
@@ -55,18 +61,19 @@ class MemoryStore:
 
     def get_latest(self, topic: str, n: int = 5) -> list[dict]:
         """获取最近 n 条记忆。"""
-        return self.get_all(topic)[-n:]
+        return self.get_all(topic)[-n:] if n > 0 else []
 
     def search_by_tag(self, topic: str, tag: str) -> list[dict]:
         return [e for e in self.get_all(topic) if tag in e.get("tags", [])]
 
     def set_kv(self, topic: str, key: str, value: Any) -> None:
         """在 topic 下存储键值对（覆盖写）。"""
-        data = self._load_topic(topic)
-        if "kv" not in data:
-            data["kv"] = {}
-        data["kv"][key] = {"value": value, "updated_at": datetime.now().isoformat()}
-        self._save_topic(topic, data)
+        with file_lock(self._topic_file(topic).with_suffix(".lock"), timeout=5):
+            data = self._load_topic(topic)
+            if "kv" not in data:
+                data["kv"] = {}
+            data["kv"][key] = {"value": value, "updated_at": datetime.now().isoformat()}
+            self._save_topic(topic, data)
 
     def get_kv(self, topic: str, key: str, default: Any = None) -> Any:
         data = self._load_topic(topic)

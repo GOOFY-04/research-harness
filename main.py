@@ -1,440 +1,319 @@
 #!/usr/bin/env python3
-"""
-research-harness — 面向长流程科研的智能体框架
-
-用法：
-  python main.py run --direction "你的研究方向"
-  python main.py run --direction "..." --session my_session   # 指定 session 名
-  python main.py resume --session session_20260519_120000     # 从断点继续
-  python main.py status --session session_20260519_120000     # 查看进度
-  python main.py list                                          # 列出所有 session
-"""
-
+"""CLI for resumable research generation and validation."""
 import argparse
 import logging
 import os
-import sys
 from pathlib import Path
-
+from datetime import datetime
+import shutil
+import sys
 import yaml
 
-# 加载 .env（优先级低于已有环境变量，不会覆盖系统设置）
+ROOT = Path(__file__).resolve().parent
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env", override=False)
+    load_dotenv(ROOT / ".env", override=False)
 except ImportError:
-    pass  # python-dotenv 未安装时静默跳过
+    pass
 
 from harness.core import CheckpointManager, MemoryStore, WorkflowEngine
-from harness.core.skill import get_global_registry
-from harness.agents import (
-    PlannerAgent,
-    LiteratureAgent,
-    MethodAgent,
-    CoderAgent,
-    ReviewerAgent,
-    RevisionAgent,
-    WriterAgent,
-    SkillHunterAgent,
-    ExperimentLoopAgent,
-)
+from harness.core.agent import BaseAgent
+from harness.core.io import safe_path, validate_result, file_lock
+from harness.core.skill import SkillRegistry
+from harness.agents import PlannerAgent, LiteratureAgent, MethodAgent, CoderAgent, ReviewerAgent, WriterAgent
 from harness.agents.executor import ExecutorAgent
 from harness.agents.documenter import DocumenterAgent
-from harness.skills import (
-    CitationFormatSkill,
-    CodeReviewSkill,
-    DependencyCheckSkill,
-    ExperimentTrackerSkill,
-    LaTeXCompileSkill,
-    PaperSummarySkill,
-    PlotGenerationSkill,
-    TestGenerationSkill,
-)
+from harness.skills import CodeReviewSkill, DependencyCheckSkill, TestGenerationSkill
+from harness.tools import write_code_files
+from harness.tools.validation import validate_files
 
 
-# ------------------------------------------------------------------
-# 日志配置
-# ------------------------------------------------------------------
-
-def setup_logging(level: str = "INFO", log_file: str = "harness.log") -> None:
-    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+def setup_logging(level="INFO", log_file="harness.log"):
+    handlers = [logging.StreamHandler(sys.stdout)]
     if log_file:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO),
-                        format=fmt, handlers=handlers)
+                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=handlers)
 
 
-# ------------------------------------------------------------------
-# 配置加载
-# ------------------------------------------------------------------
-
-def load_config(config_path: str = "configs/default.yaml") -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-# ------------------------------------------------------------------
-# Agent 注册表
-# ------------------------------------------------------------------
-
-def build_agent_registry(config: dict, memory: MemoryStore) -> dict:
-    """根据配置实例化所有 agent，返回 {name: agent} 字典。"""
-    api_key = config["anthropic"].get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
-    agent_cfg = config.get("agents", {})
-
-    # 标准 Agent 参数（不从 YAML 透传）
-    _std_agent_keys = {"use_extended_thinking", "thinking_budget"}
-
-    def make(cls, name: str, **extra_kwargs):
-        cfg = agent_cfg.get(name, {})
-        kwargs = {
-            "memory": memory,
-            "api_key": api_key,
-            "use_extended_thinking": cfg.get("use_extended_thinking", False),
-            "thinking_budget": cfg.get("thinking_budget", 5000),
-        }
-        # 透传 YAML 中的 Agent 专属参数（如 experiment_loop 的 check_interval 等）
-        for k, v in cfg.items():
-            if k not in _std_agent_keys and k not in kwargs:
-                kwargs[k] = v
-        kwargs.update(extra_kwargs)
-        return cls(**kwargs)
-
-    return {
-        "planner":    make(PlannerAgent,    "planner"),
-        "literature": make(LiteratureAgent, "literature"),
-        "method":     make(MethodAgent,     "method"),
-        "coder":      make(CoderAgent,      "coder"),
-        "reviewer":   make(ReviewerAgent,   "reviewer"),
-        "revision":   make(RevisionAgent,   "revision"),
-        "writer":     make(WriterAgent,     "writer"),
-        "executor":        make(ExecutorAgent,        "executor", timeout=600),
-        "experiment_loop": make(ExperimentLoopAgent,  "experiment_loop"),
-        "documenter":      make(DocumenterAgent,      "documenter"),
-        "skill_hunter":    make(SkillHunterAgent,    "skill_hunter"),
-    }
+def load_config(config_path=None):
+    path = Path(config_path).resolve() if config_path else ROOT / "configs/default.yaml"
+    with path.open(encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    if not isinstance(config, dict):
+        raise ValueError("Configuration must be a mapping")
+    if (not isinstance(config.get("paths"), dict) or not isinstance(config.get("workflow"), dict)
+            or not all(isinstance(config["paths"].get(k), str)
+                       for k in ("sessions_dir", "memory_dir", "workflows_dir"))
+            or not isinstance(config["workflow"].get("default"), str)):
+        raise ValueError("Configuration needs paths (sessions_dir, memory_dir, workflows_dir) and workflow.default")
+    # Project paths are relative to project_root, itself relative to the config file.
+    project = (path.parent / config.get("project_root", "..")).resolve()
+    for key in ("sessions_dir", "memory_dir", "workflows_dir"):
+        config["paths"][key] = str((project / config["paths"][key]).resolve())
+    config["workflow"]["default"] = str((project / config["workflow"]["default"]).resolve())
+    config["skills_file"] = str((project / config.get("skills_file", "configs/skills.yaml")).resolve())
+    if config.get("logging", {}).get("file"):
+        config["logging"]["file"] = str((project / config["logging"]["file"]).resolve())
+    return config
 
 
-def setup_skills(skills_config: dict | None = None) -> dict:
-    """根据配置注册 skills 到全局注册表。仅注册 enabled=true 的 skill。
-    返回完整的 skills 配置字典（包括 auto_skill_hunt 等全局设置）。
-    """
-    # 加载 skills 配置（如果未传入，尝试从 configs/skills.yaml 加载）
-    if skills_config is None:
-        skills_yaml = Path(__file__).parent / "configs" / "skills.yaml"
-        if skills_yaml.exists():
-            with open(skills_yaml, "r", encoding="utf-8") as f:
-                skills_config = yaml.safe_load(f)
-        else:
-            skills_config = {}
-
-    skill_cfg = skills_config.get("skills", {}) if skills_config else {}
-
-    # 注册所有内置 skills（按 enabled 标记过滤）
-    all_skills = {
-        "code_review": CodeReviewSkill(),
-        "dependency_check": DependencyCheckSkill(),
-        "test_generation": TestGenerationSkill(),
-        "paper_summary": PaperSummarySkill(),
-        "latex_compile": LaTeXCompileSkill(),
-        "experiment_tracker": ExperimentTrackerSkill(),
-        "citation_format": CitationFormatSkill(),
-        "plot_generation": PlotGenerationSkill(),
-    }
-
-    registry = get_global_registry()
-    registered = 0
-    for name, skill in all_skills.items():
-        if skill_cfg.get(name, {}).get("enabled", True):
-            registry.register(skill)
-            registered += 1
-        else:
-            logging.info(f"[main] skill '{name}' 已在配置中禁用，跳过注册")
-
-    logging.info(f"[main] 已注册 {registered} 个 skills")
-    return skills_config
+def build_agent_registry(config, memory):
+    provider = config.get("llm", config.get("anthropic", {}))
+    settings = config.get("agents", {})
+    classes = {"planner": PlannerAgent, "literature": LiteratureAgent, "method": MethodAgent,
+               "coder": CoderAgent, "reviewer": ReviewerAgent, "writer": WriterAgent,
+               "executor": ExecutorAgent, "documenter": DocumenterAgent}
+    result = {}
+    for name, cls in classes.items():
+        options = dict(memory=memory, api_key=provider.get("api_key") or None,
+                       base_url=provider.get("base_url"), request_timeout=provider.get("timeout", 120),
+                       protocol=provider.get("protocol", "anthropic"),
+                       api_key_env=provider.get("api_key_env"))
+        common_model = provider.get("default_model")
+        if common_model:
+            options["model"] = common_model
+        cfg = settings.get(name, {})
+        for key in ("model", "max_tokens", "use_extended_thinking", "thinking_budget", "request_timeout"):
+            if key in cfg:
+                options[key] = cfg[key]
+        if name in ("coder", "executor"):
+            for key in ("allowed_dependencies", "required_metric_keys"):
+                if key in cfg:
+                    options[key] = cfg[key]
+        if name == "executor":
+            for key in ("timeout", "install_dependencies", "run_entry_point", "entry_args",
+                        "enable_code_review", "require_metrics", "python_executable"):
+                if key in cfg:
+                    options[key] = cfg[key]
+        result[name] = cls(**options)
+    return result
 
 
-# ------------------------------------------------------------------
-# 子命令实现
-# ------------------------------------------------------------------
-
-def cmd_run(args, config: dict) -> None:
-    """启动新的研究流程（或从断点继续）。"""
-    paths = config["paths"]
-    memory = MemoryStore(paths["memory_dir"])
-    agents = build_agent_registry(config, memory)
-
-    # 设置 skills（按 skills.yaml 中的 enabled 标记过滤）
-    skills_config = setup_skills(config.get("skills"))
-    skill_registry = get_global_registry()
-
-    checkpoint = CheckpointManager(
-        sessions_dir=paths["sessions_dir"],
-        session_id=args.session,
-    )
-
-    # 为当前 session 添加独立的日志文件
-    session_log = Path(checkpoint.session_dir) / "session.log"
-    session_handler = logging.FileHandler(str(session_log), encoding="utf-8")
-    session_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    ))
-    session_handler.setLevel(logging.DEBUG)
-    logging.root.addHandler(session_handler)
-    logging.info(f"[main] Session 日志文件: {session_log}")
-
-    # 将研究方向注入 planning 阶段的 inputs
-    workflow_path = args.workflow or config["workflow"]["default"]
-    auto_skill_hunt = skills_config.get("auto_skill_hunt", {}).get("enabled", False) if skills_config else False
-    engine = WorkflowEngine(workflow_path, checkpoint, agents, skill_registry, auto_skill_hunt=auto_skill_hunt)
-
-    # 把 research_direction 注入到 planning 阶段
-    # 通过在 state.metadata 中预置，再在 PlannerAgent.build_prompt 里读取
-    state = checkpoint.load()
-    if not state.get("workflow_name"):
-        state["workflow_name"] = engine.spec.name
-    if args.direction:
-        state.setdefault("metadata", {})["research_direction"] = args.direction
-        # 同时注入到 planning 阶段的 inputs（WorkflowEngine 会合并）
-        state.setdefault("stage_inputs_override", {})["planning"] = {
-            "research_direction": args.direction
-        }
-        checkpoint.save(state)
-
-    resume = not args.no_resume
-    final_state = engine.run(resume=resume)
-    engine.status(final_state)
-
-    # 输出论文草稿
-    paper_output = checkpoint.get_stage_output(final_state, "paper_writing")
-    if paper_output and not paper_output.get("parse_error"):
-        out_dir = Path(paths["sessions_dir"]) / checkpoint.session_id / "output"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        latex_path = out_dir / "paper.tex"
-        latex_path.write_text(
-            paper_output.get("full_paper_latex", "% 生成失败"),
-            encoding="utf-8"
-        )
-        print(f"\n论文草稿已保存至: {latex_path}")
-
-    # 输出代码文件
-    code_output = checkpoint.get_stage_output(final_state, "coding")
-    if code_output and not code_output.get("parse_error"):
-        from harness.tools import write_code_files
-        code_dir = Path(paths["sessions_dir"]) / checkpoint.session_id / "code"
-        written = write_code_files(code_output.get("files", []), code_dir)
-        if written:
-            print(f"代码文件已写入: {code_dir} ({len(written)} 个文件)")
-
-    # 输出 README.md
-    doc_output = checkpoint.get_stage_output(final_state, "documentation")
-    if doc_output and not doc_output.get("parse_error"):
-        readme_path = Path(paths["sessions_dir"]) / checkpoint.session_id / "README.md"
-        readme_path.write_text(doc_output.get("readme", ""), encoding="utf-8")
-        print(f"项目文档已保存至: {readme_path}")
-
-
-def cmd_reset_stage(args, config: dict) -> None:
-    """将指定阶段重置为待执行，配合 resume 重跑。"""
-    paths = config["paths"]
-    checkpoint = CheckpointManager(
-        sessions_dir=paths["sessions_dir"],
-        session_id=args.session,
-    )
-    state = checkpoint.load()
-    if not state.get("workflow_name"):
-        print(f"Session '{args.session}' 不存在。")
-        return
-
-    stages = args.stages
-    for stage_id in stages:
-        if stage_id not in state["stages"] and stage_id not in state["completed_stages"]:
-            print(f"  ? [{stage_id}] 不存在，跳过")
+def setup_skills(config=None):
+    config = config or {}
+    path = Path(config.get("skills_file", ROOT / "configs/skills.yaml"))
+    settings = yaml.safe_load(path.read_text(encoding="utf-8")).get("skills", {}) if path.exists() else {}
+    registry = SkillRegistry()
+    provider = config.get("llm", config.get("anthropic", {}))
+    for cls in (CodeReviewSkill, DependencyCheckSkill, TestGenerationSkill):
+        cfg = settings.get(cls.name, {})
+        if not cfg.get("enabled", True):
             continue
-        checkpoint.reset_stage(state, stage_id)
-        print(f"  ✓ [{stage_id}] 已重置")
+        options = {} if cls is DependencyCheckSkill else {
+            "api_key": provider.get("api_key"), "base_url": provider.get("base_url"),
+            "timeout": provider.get("timeout", 120), "model": provider.get("default_model"),
+            "protocol": provider.get("protocol", "anthropic"),
+            "api_key_env": provider.get("api_key_env")}
+        registry.register(cls(**options))
+        if cfg.get("auto_trigger", False):
+            registry.auto_triggers.append(cls.name)
+    return registry
 
-    print(f"\n已重置 {len(stages)} 个阶段。运行以下命令重跑：")
-    print(f"  python main.py resume --session {args.session}")
+
+def workflow_for(args, config, state):
+    return getattr(args, "workflow", None) or state.get("workflow_path") or config["workflow"]["default"]
 
 
-def cmd_repair(args, config: dict) -> None:
-    """对已有 session 中 parse_error 的阶段重新解析，不重新调用 API。"""
-    paths = config["paths"]
-    checkpoint = CheckpointManager(
-        sessions_dir=paths["sessions_dir"],
-        session_id=args.session,
-    )
-    state = checkpoint.load()
-    if not state.get("workflow_name"):
-        print(f"Session '{args.session}' 不存在。")
-        return
+def existing_session(args, config):
+    cp = CheckpointManager(config["paths"]["sessions_dir"], args.session)
+    if not cp.checkpoint_file.exists():
+        raise ValueError(f"Session does not exist: {args.session}")
+    return cp, cp.load()
 
-    # 构建 agent 注册表（只用 _parse_json，不调用 API）
-    memory = MemoryStore(paths["memory_dir"])
-    agents = build_agent_registry(config, memory)
-    agent_map = {
-        "planning":        agents["planner"],
-        "literature":      agents["literature"],
-        "method_design":   agents["method"],
-        "coding":          agents["coder"],
-        "self_review":     agents["reviewer"],
-        "revision":        agents["revision"],
-        "paper_writing":   agents["writer"],
-        "code_execution":  agents["executor"],
-        "experiment_loop": agents["experiment_loop"],
-        "documentation":   agents["documenter"],
-    }
 
-    repaired = []
-    for stage_id, stage_data in state.get("stages", {}).items():
-        output = stage_data.get("output", {})
+def archive_artifacts(cp, stage_ids, include_checkpoint=False):
+    targets = set()
+    if "coding" in stage_ids:
+        targets.add("code")
+    if "paper_writing" in stage_ids:
+        targets.add("output")
+    if "documentation" in stage_ids:
+        targets.add("README.md")
+    if include_checkpoint:
+        targets.add("checkpoint.json")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    for relative in targets:
+        source = safe_path(cp.session_dir, relative)
+        destination = safe_path(cp.session_dir, f"history/{stamp}/{relative}")
+        # Both resolved paths are verified inside the named session before moving.
+        if source.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if relative == "checkpoint.json":
+                shutil.copy2(source, destination)
+            else:
+                source.rename(destination)
+
+
+def export_artifacts(cp, state):
+    for stage_id in ("coding", "paper_writing", "documentation"):
+        if not cp.is_stage_done(state, stage_id):
+            continue
+        output = cp.get_stage_output(state, stage_id)
+        validate_result(output)
+        if stage_id == "coding":
+            files = list(output.get("files", []))
+            code_dir = safe_path(cp.session_dir, "code")
+            validate_files(files, code_dir)
+            # Store requirements even when it was separate from the generated manifest.
+            files = [f for f in files if f["path"].replace("\\", "/").casefold() != "requirements.txt"]
+            files.append({"path": "requirements.txt", "content": output.get("dependencies", "")})
+            write_code_files(files, code_dir)
+        elif stage_id == "paper_writing":
+            directory = safe_path(cp.session_dir, "output")
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "paper.tex").write_text(output["full_paper_latex"], encoding="utf-8")
+            (directory / "references.bib").write_text(output.get("bibtex_entries", ""), encoding="utf-8")
+        else:
+            safe_path(cp.session_dir, "README.md").write_text(output["readme"], encoding="utf-8")
+
+
+def cmd_run(args, config):
+    cp = CheckpointManager(config["paths"]["sessions_dir"], args.session)
+    previous = cp.load()
+    resume = getattr(args, "resume", config["workflow"].get("resume", True)) and not args.no_resume
+    direction = getattr(args, "direction", None)
+    old_direction = previous.get("metadata", {}).get("research_direction")
+    if resume and previous.get("stages") and direction and old_direction != direction:
+        raise ValueError("Research direction changed; use a new session or --no-resume")
+    agents = build_agent_registry(config, MemoryStore(config["paths"]["memory_dir"]))
+    skills = setup_skills(config)
+    # Share the configured registry with the optional executor review hook.
+    agents["executor"].skill_registry = skills
+    engine = WorkflowEngine(workflow_for(args, config, previous if resume else {}), cp, agents, skills)
+    if not resume and cp.checkpoint_file.exists():
+        archive_artifacts(cp, {"coding", "paper_writing", "documentation"}, include_checkpoint=True)
+    elif cp.checkpoint_file.exists():
+        archive_artifacts(cp, set(), include_checkpoint=True)
+    override = {"planning": {"research_direction": direction}} if direction else None
+    metadata = {"research_direction": direction} if direction else None
+    final = engine.run(resume=resume, inputs_override=override, metadata=metadata)
+    engine.status(final)
+    changed = {sid for sid in ("coding", "paper_writing", "documentation")
+               if previous.get("stages", {}).get(sid) != final.get("stages", {}).get(sid)}
+    archive_artifacts(cp, changed)
+    export_artifacts(cp, final)
+    print(f"Session: {cp.session_id}; status: {final['status']}; directory: {cp.session_dir}")
+    return 0 if final["status"] == "completed" else 1
+
+
+def cmd_resume(args, config):
+    existing_session(args, config)
+    args.no_resume = False
+    args.resume = True
+    args.direction = None
+    return cmd_run(args, config)
+
+
+def cmd_reset_stage(args, config):
+    cp, state = existing_session(args, config)
+    engine = WorkflowEngine(workflow_for(args, config, state), cp, {})
+    state["stage_dependencies"] = {s.id: s.depends_on for s in engine.spec.stages}
+    unknown = set(args.stages) - set(state["stage_dependencies"])
+    if unknown:
+        raise ValueError(f"Unknown stages: {sorted(unknown)}")
+    archive_artifacts(cp, set(), include_checkpoint=True)
+    before = set(state["stages"])
+    for stage in args.stages:
+        cp.reset_stage(state, stage)
+    invalidated = (before - set(state["stages"])) | set(args.stages)
+    archive_artifacts(cp, invalidated)
+    print(f"Reset stages and consumers: {', '.join(sorted(invalidated))}")
+    return 0
+
+
+def cmd_repair(args, config):
+    cp, state = existing_session(args, config)
+    archive_artifacts(cp, set(), include_checkpoint=True)
+    # Lazy clients make validation/repair entirely offline and credential-free.
+    agents = build_agent_registry(config, None)
+    engine = WorkflowEngine(workflow_for(args, config, state), cp, agents)
+    state["stage_dependencies"] = {s.id: s.depends_on for s in engine.spec.stages}
+    repaired, remaining = [], []
+    for stage in engine.spec.stages:
+        data = state["stages"].get(stage.id, {})
+        output = data.get("output")
         if not isinstance(output, dict) or not output.get("parse_error"):
             continue
-        raw = output.get("raw", "")
-        if not raw:
+        fixed = BaseAgent._parse_json(output.get("raw", ""))
+        try:
+            engine._validate_output(stage, fixed)
+        except (ValueError, TypeError, KeyError, SyntaxError):
+            remaining.append(stage.id)
             continue
-        agent = agent_map.get(stage_id)
-        if agent is None:
-            continue
-        fixed = agent._parse_json(raw)
-        if not fixed.get("parse_error"):
-            state["stages"][stage_id]["output"] = fixed
-            repaired.append(stage_id)
-            print(f"  ✓ [{stage_id}] 解析修复成功，字段: {list(fixed.keys())[:6]}")
-        else:
-            print(f"  ✗ [{stage_id}] 仍然解析失败")
-
-    if repaired:
-        checkpoint.save(state)
-        print(f"\n已修复 {len(repaired)} 个阶段，checkpoint 已更新。")
-
-        # 写出产物
-        paper_output = checkpoint.get_stage_output(state, "paper_writing")
-        if paper_output and not paper_output.get("parse_error"):
-            out_dir = Path(paths["sessions_dir"]) / checkpoint.session_id / "output"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            latex_path = out_dir / "paper.tex"
-            latex_path.write_text(
-                paper_output.get("full_paper_latex", "% 生成失败"),
-                encoding="utf-8",
-            )
-            print(f"论文草稿已保存至: {latex_path}")
-
-        code_output = checkpoint.get_stage_output(state, "coding")
-        if code_output and not code_output.get("parse_error"):
-            from harness.tools import write_code_files
-            code_dir = Path(paths["sessions_dir"]) / checkpoint.session_id / "code"
-            written = write_code_files(code_output.get("files", []), code_dir)
-            if written:
-                print(f"代码文件已写入: {code_dir} ({len(written)} 个文件)")
-    else:
-        print("没有需要修复的阶段。")
+        before = set(state["stages"])
+        cp.reset_stage(state, stage.id)
+        archive_artifacts(cp, before - set(state["stages"]))
+        cp.mark_stage_started(state, stage.id)
+        cp.mark_stage_done(state, stage.id, fixed)
+        repaired.append(stage.id)
+    export_artifacts(cp, state)
+    print(f"Repaired: {repaired}; still invalid: {remaining}")
+    return 1 if remaining else 0
 
 
-def cmd_resume(args, config: dict) -> None:
-    """从指定 session 的断点继续。"""
-    args.no_resume = False
-    args.direction = None
-    args.workflow = None
-    cmd_run(args, config)
-
-
-def cmd_status(args, config: dict) -> None:
-    """查看指定 session 的进度。"""
-    paths = config["paths"]
-    checkpoint = CheckpointManager(
-        sessions_dir=paths["sessions_dir"],
-        session_id=args.session,
-    )
-    state = checkpoint.load()
-    if not state.get("workflow_name"):
-        print(f"Session '{args.session}' 不存在或尚未初始化。")
-        return
-
-    workflow_path = config["workflow"]["default"]
-    # 仅用于打印状态，不需要真实 agents
-    engine = WorkflowEngine(workflow_path, checkpoint, agent_registry={})
+def cmd_status(args, config):
+    cp, state = existing_session(args, config)
+    engine = WorkflowEngine(workflow_for(args, config, state), cp, {})
     engine.status(state)
+    print(f"Overall status: {state.get('status', 'legacy')}")
+    return 0
 
 
-def cmd_list(args, config: dict) -> None:
-    """列出所有 session。"""
-    paths = config["paths"]
-    checkpoint = CheckpointManager(sessions_dir=paths["sessions_dir"])
-    sessions = checkpoint.list_sessions()
-    if not sessions:
-        print("暂无 session 记录。")
-        return
-    print(f"\n{'Session ID':<35} {'工作流':<25} {'当前阶段':<20} {'更新时间'}")
-    print("-" * 100)
-    for s in sessions:
-        print(f"{s['session_id']:<35} {(s['workflow'] or ''):<25} "
-              f"{(s['current_stage'] or ''):<20} {s['updated_at'] or ''}")
-    print()
+def cmd_list(args, config):
+    cp = CheckpointManager(config["paths"]["sessions_dir"])
+    for session in cp.list_sessions():
+        print(f"{session['session_id']}  {session['workflow']}  {session['current_stage']}  {session['updated_at']}")
+    return 0
 
 
-# ------------------------------------------------------------------
-# CLI 入口
-# ------------------------------------------------------------------
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="research-harness — 面向长流程科研的智能体框架",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--config", default="configs/default.yaml", help="配置文件路径")
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # run
-    p_run = subparsers.add_parser("run", help="启动新的研究流程")
-    p_run.add_argument("--direction", required=True, help="研究方向（自然语言描述）")
-    p_run.add_argument("--session", default=None, help="指定 session 名称（默认自动生成）")
-    p_run.add_argument("--workflow", default=None, help="工作流 YAML 路径")
-    p_run.add_argument("--no-resume", action="store_true", help="强制全新开始，忽略已有 checkpoint")
-
-    # resume
-    p_resume = subparsers.add_parser("resume", help="从断点继续")
-    p_resume.add_argument("--session", required=True, help="要继续的 session ID")
-    p_resume.add_argument("--workflow", default=None, help="工作流 YAML 路径")
-
-    # status
-    p_status = subparsers.add_parser("status", help="查看 session 进度")
-    p_status.add_argument("--session", required=True, help="session ID")
-
-    # repair
-    p_repair = subparsers.add_parser("repair", help="重新解析 parse_error 阶段（不重新调用 API）")
-    p_repair.add_argument("--session", required=True, help="session ID")
-
-    # reset-stage
-    p_reset = subparsers.add_parser("reset-stage", help="重置指定阶段，配合 resume 重跑")
-    p_reset.add_argument("--session", required=True, help="session ID")
-    p_reset.add_argument("stages", nargs="+", help="要重置的阶段 ID（可多个，空格分隔）")
-
-    # list
-    subparsers.add_parser("list", help="列出所有 session")
-
-    args = parser.parse_args()
-    config = load_config(args.config)
-    setup_logging(
-        level=config.get("logging", {}).get("level", "INFO"),
-        log_file=config.get("logging", {}).get("file", "harness.log"),
-    )
-
-    dispatch = {
-        "run": cmd_run,
-        "resume": cmd_resume,
-        "repair": cmd_repair,
-        "reset-stage": cmd_reset_stage,
-        "status": cmd_status,
-        "list": cmd_list,
-    }
-    dispatch[args.command](args, config)
+def main(argv=None):
+    # Windows may inherit a legacy GBK console even when checkpoint text is
+    # UTF-8. Reconfigure the CLI streams so status symbols and Chinese stage
+    # names cannot turn a successful command into an encoding exception.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+    parser = argparse.ArgumentParser(description="Resumable research generation and validation")
+    parser.add_argument("--config", default=None)
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("run")
+    run.add_argument("--direction", required=True)
+    run.add_argument("--session")
+    run.add_argument("--workflow")
+    run.add_argument("--no-resume", action="store_true")
+    for command in ("resume", "status", "repair", "reset-stage"):
+        child = sub.add_parser(command)
+        child.add_argument("--session", required=True)
+        child.add_argument("--workflow")
+        if command == "reset-stage":
+            child.add_argument("stages", nargs="+")
+    sub.add_parser("list")
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config)
+        setup_logging(**{"level": config.get("logging", {}).get("level", "INFO"),
+                         "log_file": config.get("logging", {}).get("file", "")})
+        action = {"run": cmd_run, "resume": cmd_resume, "status": cmd_status,
+                  "repair": cmd_repair, "reset-stage": cmd_reset_stage, "list": cmd_list}[args.command]
+        if args.command in ("run", "resume", "repair", "reset-stage"):
+            if args.command != "run":
+                existing_session(args, config)
+            cp = CheckpointManager(config["paths"]["sessions_dir"], args.session)
+            args.session = cp.session_id
+            with file_lock(cp.session_dir / ".session.lock"):
+                return action(args, config)
+        return action(args, config)
+    except (ValueError, OSError, RuntimeError, yaml.YAMLError) as exc:
+        logging.error("%s", exc)
+        return 1
+    except KeyboardInterrupt:
+        logging.warning("Interrupted; resume will retry the unfinished stage.")
+        return 130
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

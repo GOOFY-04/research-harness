@@ -1,0 +1,59 @@
+# Full end-to-end profile for the lightweight SfM/generated-view experiment.
+project_root: ".."
+skills_file: "configs/skills.yaml"
+
+llm:
+  protocol: "openai_compatible"
+  api_key: ""
+  api_key_env: "AGNES_API_KEY"
+  base_url: "https://apihub.agnes-ai.com/v1"
+  default_model: "agnes-3.0-flash"
+  timeout: 180
+
+paths:
+  sessions_dir: "sessions"
+  memory_dir: "memory"
+  workflows_dir: "workflows"
+
+workflow:
+  default: "workflows/research.yaml"
+  resume: true
+
+agents:
+  planner:
+    use_extended_thinking: false
+  method:
+    use_extended_thinking: false
+  reviewer:
+    use_extended_thinking: false
+  literature:
+    use_extended_thinking: false
+  coder:
+    use_extended_thinking: false
+    allowed_dependencies: [numpy]
+    required_metric_keys: &sfm_metrics
+      - baseline_rotation_error_deg
+      - proposed_rotation_error_deg
+      - baseline_translation_direction_error_deg
+      - proposed_translation_direction_error_deg
+      - baseline_focal_length_relative_error
+      - proposed_focal_length_relative_error
+      - baseline_reprojection_error
+      - proposed_reprojection_error
+      - improvement
+  writer:
+    use_extended_thinking: false
+  executor:
+    timeout: 600
+    python_executable: ".venv/Scripts/python.exe"
+    install_dependencies: true
+    run_entry_point: true
+    entry_args: []
+    enable_code_review: false
+    require_metrics: true
+    allowed_dependencies: [numpy]
+    required_metric_keys: *sfm_metrics
+
+logging:
+  level: "INFO"
+  file: "harness.log"

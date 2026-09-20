@@ -1,429 +1,191 @@
-"""
-ExecutorAgent — 自主运行实验代码
-
-功能：
-  1. 分析生成的代码结构
-  2. 安装依赖（requirements.txt）
-  3. 运行训练/测试脚本
-  4. 捕获输出和错误
-  5. 生成执行报告
-  6. 可选：调用 skills 进行代码审查
-
-输出：
-  - execution_log: 执行日志
-  - success: 是否成功
-  - errors: 错误信息（如果有）
-  - metrics: 提取的指标（如果有）
-  - code_review: 代码审查结果（如果启用）
-"""
-
+"""Execute generated code in a fresh source directory and a session virtualenv."""
 import json
 import logging
 import os
-import subprocess
+import shutil
 import sys
-import time
+import tempfile
 from pathlib import Path
-from typing import Optional
+from time import monotonic
 
 from harness.core.agent import BaseAgent
+from harness.core.io import safe_path
 from harness.core.skill import get_global_registry
+from harness.tools.code_runner import write_code_files
+from harness.tools.process import run_command
+from harness.tools.validation import validate_dependencies, validate_files, validate_imports
 
 logger = logging.getLogger(__name__)
 
 
 class ExecutorAgent(BaseAgent):
-    model = "claude-sonnet-4-6"
-    max_tokens = 8192
+    required_fields = {"success": bool, "analysis": dict, "execution_kind": str}
 
-    def __init__(self, *args, timeout: int = 600, enable_code_review: bool = False,
-                 max_fix_attempts: int = 3, dep_install_timeout: int = 7200,
-                 dep_install_retries: int = 2, **kwargs):
-        """
-        Args:
-            timeout: 代码执行超时时间（秒），默认 10 分钟
-            enable_code_review: 是否启用代码审查 skill
-            max_fix_attempts: 测试失败时最大自动修复次数
-            dep_install_timeout: 依赖安装超时（秒），默认 7200（2h）
-            dep_install_retries: 依赖安装失败最大重试次数，默认 2
-        """
+    def __init__(self, *args, timeout=600, install_dependencies=True,
+                 run_entry_point=False, entry_args=None, enable_code_review=False,
+                 require_metrics=False, required_metric_keys=None, python_executable=None,
+                 allowed_dependencies=None, **kwargs):
         super().__init__(*args, **kwargs)
+        if timeout <= 0:
+            raise ValueError("Executor timeout must be positive")
         self.timeout = timeout
+        self.install_dependencies = install_dependencies
+        self.run_entry_point = run_entry_point
+        self.entry_args = entry_args or []
+        if not isinstance(self.entry_args, list) or not all(isinstance(x, str) for x in self.entry_args):
+            raise ValueError("entry_args must be a list of strings")
         self.enable_code_review = enable_code_review
-        self.max_fix_attempts = max_fix_attempts
-        self.dep_install_timeout = dep_install_timeout
-        self.dep_install_retries = dep_install_retries
+        self.require_metrics = bool(require_metrics)
+        self.required_metric_keys = required_metric_keys or []
+        if (not isinstance(self.required_metric_keys, list)
+                or not all(isinstance(item, str) and item.strip() for item in self.required_metric_keys)
+                or len(set(self.required_metric_keys)) != len(self.required_metric_keys)):
+            raise ValueError("required_metric_keys must be a unique list of non-empty strings")
+        self.allowed_dependencies = allowed_dependencies
+        requested_python = python_executable or sys.executable
+        if not isinstance(requested_python, str) or not requested_python.strip():
+            raise ValueError("python_executable must be a non-empty string")
+        resolved_python = shutil.which(requested_python)
+        if not resolved_python:
+            raise ValueError(f"Python executable was not found: {requested_python}")
+        self.python_executable = str(Path(resolved_python).resolve())
 
-    def build_prompt(self, stage_id: str, inputs: dict, state: dict) -> str:
-        return ""  # 不使用标准 prompt，在 run() 中自定义
+    def build_prompt(self, stage_id, inputs, state):
+        return ""
 
-    def run(self, stage_id: str, inputs: dict, state: dict) -> dict:
-        """执行代码并生成报告，支持自动修复和数据集注入。"""
-        files = inputs.get("files", [])
-        entry_point = inputs.get("entry_point", "")
-        dependencies = inputs.get("dependencies", "")
-        test_snippet = inputs.get("test_snippet", "")
-        session_dir = state.get("session_dir", "")
-
-        # 数据集路径注入（优先级：state > 环境变量）
-        dataset_path = state.get("dataset_path", os.environ.get("RESEARCH_DATASET_PATH", ""))
-
-        if not session_dir:
-            return {"error": "缺少 session_dir", "success": False}
-
-        code_dir = Path(session_dir) / "code"
-        code_dir.mkdir(parents=True, exist_ok=True)
-
-        # 用于记录自动修复历史
-        fix_history = []
-
-        # ------------------------------------------------------------------
-        # 1. 写入代码文件
-        # ------------------------------------------------------------------
-        logger.info(f"[ExecutorAgent] 写入 {len(files)} 个代码文件到 {code_dir}")
-        self._write_files(files, code_dir)
-
-        # ------------------------------------------------------------------
-        # 2. 写入 requirements.txt
-        # ------------------------------------------------------------------
-        if dependencies:
-            req_file = code_dir / "requirements.txt"
-            req_file.write_text(dependencies, encoding="utf-8")
-            logger.info(f"[ExecutorAgent] 写入 requirements.txt")
-
-        # ------------------------------------------------------------------
-        # 3. 安装依赖
-        # ------------------------------------------------------------------
-        install_log, install_ok = self._install_dependencies(code_dir, dependencies)
-
-        # ------------------------------------------------------------------
-        # 4. 运行测试代码（带自动修复循环）
-        # ------------------------------------------------------------------
-        test_log = ""
-        test_success = None
-        if test_snippet and install_ok:
-            test_log, test_success = self._run_test_with_autofix(
-                test_snippet, files, code_dir, dataset_path, fix_history
-            )
-        elif test_snippet and not install_ok:
-            test_log = "依赖安装失败，跳过测试执行。\n" + install_log
-            logger.warning(f"[ExecutorAgent] 依赖安装失败，跳过测试")
-
-        # ------------------------------------------------------------------
-        # 5. 使用 LLM 分析执行结果
-        # ------------------------------------------------------------------
-        analysis = self._analyze_results(files, install_log, test_log, test_success, fix_history)
-
-        # ------------------------------------------------------------------
-        # 6. 组装输出
-        # ------------------------------------------------------------------
-        overall_success = (
-            (test_success if test_success is not None else True)
-            and not analysis.get("parse_error", False)
-        )
-        output = {
-            "code_dir": str(code_dir),
-            "install_log": install_log,
-            "test_log": test_log,
-            "test_success": test_success,
-            "analysis": analysis,
-            "success": overall_success,
-            "fix_history": fix_history,  # 记录修复历史
-            "dataset_path": dataset_path,  # 记录使用的数据集路径
-        }
-
-        # ------------------------------------------------------------------
-        # 7. 可选：调用 code_review skill
-        # ------------------------------------------------------------------
-        if self.enable_code_review and files:
-            output["code_review"] = self._run_code_review(files)
-
-        # 写入记忆
-        if self.memory:
-            self.memory.append(
-                topic=stage_id,
-                content={
-                    "test_success": test_success,
-                    "summary": analysis.get("summary", ""),
-                    "fixes_applied": len(fix_history),
-                },
-                tags=["ExecutorAgent", stage_id],
-            )
-
-        return output
-
-    def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:
+    def parse_output(self, raw_text, stage_id, inputs):
         return self._parse_json(raw_text)
 
-    # ========================================================================
-    # 辅助方法
-    # ========================================================================
-
-    def _write_files(self, files: list, code_dir: Path):
-        """写入代码文件到目录"""
-        for file_info in files:
-            file_path = code_dir / file_info["path"]
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(file_info["content"], encoding="utf-8")
-
-    def _install_dependencies(self, code_dir: Path, dependencies: str) -> tuple[str, bool]:
-        """安装依赖，支持长时间超时和自动重试。返回 (日志, 是否成功)"""
-        if not dependencies:
-            return "", True
-
-        # 智能替换：将已知不可 pip 安装的包替换为替代品
-        import re as _re
-        PACKAGE_ALTERNATIVES = {
-            "diff-gaussian-rasterization": "gsplat",
-            "simple-knn": "torch-cluster",
-        }
-        for bad_pkg, alt in PACKAGE_ALTERNATIVES.items():
-            if bad_pkg in dependencies:
-                # 替换整个依赖声明（含版本号、@git+URL 等后缀）
-                dependencies = _re.sub(
-                    rf'{_re.escape(bad_pkg)}(\s*[@><=!~;].*?(?=\n|$))?',
-                    alt,
-                    dependencies,
-                    flags=_re.MULTILINE,
-                )
-                logger.info(f"[ExecutorAgent] 替换依赖: {bad_pkg} → {alt}")
+    def run(self, stage_id, inputs, state):
+        session_dir = state.get("session_dir")
+        if not session_dir:
+            raise ValueError("Missing session_dir")
+        session = Path(session_dir).resolve()
+        session.mkdir(parents=True, exist_ok=True)
+        files = inputs.get("files", [])
+        validate_files(files, session / "code")
+        validate_imports(files, self.allowed_dependencies)
+        dependencies = inputs.get("dependencies", "")
+        if not isinstance(dependencies, str):
+            raise ValueError("dependencies must be requirements text")
+        validate_dependencies(dependencies, self.allowed_dependencies)
+        test = inputs.get("test_snippet", "")
+        entry = inputs.get("entry_point", "")
+        if not test and not entry:
+            raise ValueError("Neither a test snippet nor an entry point was supplied")
+        if test:
+            compile(test, "<test_snippet>", "exec")
+        deadline = monotonic() + min(self.timeout, inputs.get("_timeout", self.timeout))
+        def execute(command, cwd):
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return {"success": False, "stdout": "", "stderr": "Execution deadline exceeded",
+                        "returncode": -1, "timed_out": True, "command": command}
+            return run_command(command, cwd, remaining)
+        # Fresh directory prevents stale files from earlier generations affecting imports.
+        code_dir = Path(tempfile.mkdtemp(prefix="execution_", dir=session))
+        write_code_files(files, code_dir)
         (code_dir / "requirements.txt").write_text(dependencies, encoding="utf-8")
+        python = self.python_executable
+        install_log, runs = "", []
+        if dependencies and self.install_dependencies:
+            environment = safe_path(session, ".venv")
+            python = str(environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+            if not Path(python).exists():
+                setup = execute([self.python_executable, "-m", "venv", str(environment)], session)
+                install_log += setup["stdout"] + setup["stderr"]
+                if not setup["success"]:
+                    return self._report(False, code_dir, install_log, [], "environment", "Virtualenv creation failed")
+            install = execute([python, "-m", "pip", "install", "--disable-pip-version-check",
+                               "-r", str(code_dir / "requirements.txt")], code_dir)
+            install_log += install["stdout"] + install["stderr"]
+            if not install["success"]:
+                return self._report(False, code_dir, install_log, [], "installation", "Dependency installation failed")
+        if test:
+            # Reserve a name instead of overwriting a generated file.
+            test_path = code_dir / "_harness_quick_test.py"
+            if test_path.exists():
+                raise ValueError("Generated files use reserved _harness_quick_test.py")
+            test_path.write_text(test, encoding="utf-8")
+            runs.append(execute([python, str(test_path)], code_dir))
+        kind = "smoke_test" if test else "entry_point"
+        if (self.run_entry_point or not test) and (not runs or runs[-1]["success"]):
+            if not entry:
+                raise ValueError("run_entry_point requires an entry_point")
+            entry_path = safe_path(code_dir, entry)
+            if not entry_path.is_file() or entry_path.suffix != ".py":
+                raise ValueError("entry_point must name an existing Python file")
+            runs.append(execute([python, str(entry_path), *self.entry_args], code_dir))
+            kind = "entry_point"
+        success = bool(runs) and all(run["success"] for run in runs)
+        output = self._report(success, code_dir, install_log, runs, kind,
+                              "" if success else "Generated program failed or timed out")
+        if (output["success"] and kind == "entry_point" and self.require_metrics
+                and not output["analysis"]["metrics"]):
+            error = "Entry point completed without a HARNESS_METRICS JSON line"
+            output.update(success=False, test_success=False, error=error)
+            output["analysis"].update(success=False, errors=[error])
+        if output["success"] and kind == "entry_point" and self.required_metric_keys:
+            missing = sorted(set(self.required_metric_keys) - set(output["analysis"]["metrics"]))
+            if missing:
+                error = f"HARNESS_METRICS is missing required keys: {', '.join(missing)}"
+                output.update(success=False, test_success=False, error=error)
+                output["analysis"].update(success=False, errors=[error])
+        if self.enable_code_review and success:
+            registry = getattr(self, "skill_registry", None) or get_global_registry()
+            output["code_review"] = [
+                {"file": f["path"], "review": registry.execute("code_review", {"code": f["content"]})}
+                for f in [f for f in files if f["path"].endswith(".py")][:3]
+            ]
+            if any(not r["review"].get("success") for r in output["code_review"]):
+                output.update(success=False, error="Code review skill failed")
+        if self.memory:
+            self.memory.append(stage_id, {"success": output["success"], "execution_kind": kind},
+                               ["ExecutorAgent", stage_id])
+        return output
 
-        full_log = ""
-        for attempt in range(self.dep_install_retries + 1):
-            if attempt > 0:
-                wait_s = min(30 * attempt, 120)
-                logger.info(
-                    f"[ExecutorAgent] 依赖安装重试 {attempt}/{self.dep_install_retries}，等待 {wait_s}s..."
-                )
-                time.sleep(wait_s)
+    def validate_output(self, output):
+        super().validate_output(output)
+        if not output["success"]:
+            return
+        metrics = output.get("analysis", {}).get("metrics", {})
+        if self.require_metrics and output.get("execution_kind") == "entry_point" and not metrics:
+            raise ValueError("Cached entry point has no HARNESS_METRICS")
+        missing = sorted(set(self.required_metric_keys) - set(metrics))
+        if missing:
+            raise ValueError(f"Cached HARNESS_METRICS is missing required keys: {', '.join(missing)}")
 
-            logger.info(
-                f"[ExecutorAgent] 安装依赖 (attempt {attempt+1}/{self.dep_install_retries+1}, "
-                f"timeout={self.dep_install_timeout}s)..."
-            )
+    def _report(self, success, code_dir, install_log, runs, kind, error=""):
+        log = "\n".join(run["stdout"] + run["stderr"] for run in runs)
+        metrics = {}
+        # Only accept explicitly emitted machine-readable metrics, never invent them.
+        for line in log.splitlines():
+            values = None
             try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
-                    cwd=code_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.dep_install_timeout,
-                )
-                install_log = result.stdout + result.stderr
-                full_log += install_log
-                if result.returncode != 0:
-                    logger.warning(
-                        f"[ExecutorAgent] 依赖安装失败 (attempt {attempt+1}): "
-                        f"{result.stderr[:200]}"
-                    )
-                    if attempt < self.dep_install_retries:
-                        continue
-                    return full_log, False
-                logger.info(f"[ExecutorAgent] 依赖安装成功")
-                return full_log, True
-            except subprocess.TimeoutExpired:
-                msg = f"依赖安装超时 ({self.dep_install_timeout}s)\n"
-                full_log += msg
-                logger.warning(f"[ExecutorAgent] {msg.strip()}")
-                if attempt < self.dep_install_retries:
-                    continue
-                return full_log, False
-            except Exception as e:
-                msg = f"依赖安装异常: {e}\n"
-                full_log += msg
-                logger.warning(f"[ExecutorAgent] {msg.strip()}")
-                if attempt < self.dep_install_retries:
-                    continue
-                return full_log, False
-
-        return full_log, False
-
-    def _run_test_with_autofix(
-        self,
-        test_snippet: str,
-        files: list,
-        code_dir: Path,
-        dataset_path: str,
-        fix_history: list
-    ) -> tuple[str, bool]:
-        """运行测试，失败时自动修复，返回 (日志, 是否成功)"""
-        test_file = code_dir / "test_quick.py"
-
-        for attempt in range(self.max_fix_attempts + 1):
-            # 写入测试文件（可能已被修复）
-            test_file.write_text(test_snippet, encoding="utf-8")
-
-            # 运行测试
-            logger.info(f"[ExecutorAgent] 运行测试代码 (attempt {attempt + 1}/{self.max_fix_attempts + 1})...")
-            test_log, test_success = self._run_test(test_file, code_dir, dataset_path)
-
-            if test_success:
-                logger.info(f"[ExecutorAgent] 测试成功")
-                return test_log, True
-
-            # 测试失败
-            if attempt < self.max_fix_attempts:
-                logger.warning(f"[ExecutorAgent] 测试失败，尝试自动修复...")
-                fixed_snippet, fix_log = self._auto_fix_test(test_snippet, test_log, files)
-
-                if fixed_snippet and fixed_snippet != test_snippet:
-                    test_snippet = fixed_snippet
-                    fix_history.append({
-                        "attempt": attempt + 1,
-                        "error": test_log[-500:],  # 最后 500 字符
-                        "fix_applied": fix_log,
-                    })
-                    logger.info(f"[ExecutorAgent] 已应用修复，重新测试...")
-                else:
-                    logger.warning(f"[ExecutorAgent] 无法修复，停止重试")
-                    break
-            else:
-                logger.warning(f"[ExecutorAgent] 已达最大重试次数")
-
-        return test_log, False
-
-    def _run_test(self, test_file: Path, code_dir: Path, dataset_path: str) -> tuple[str, bool]:
-        """运行单次测试，返回 (日志, 是否成功)"""
-        env = os.environ.copy()
-        if dataset_path:
-            env["DATASET_PATH"] = dataset_path
-
-        try:
-            result = subprocess.run(
-                [sys.executable, test_file.name],
-                cwd=code_dir,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                env=env,
-            )
-            log = result.stdout + result.stderr
-            success = result.returncode == 0
-            return log, success
-        except subprocess.TimeoutExpired:
-            return f"测试超时（{self.timeout}秒）", False
-        except Exception as e:
-            return f"测试异常: {e}", False
-
-    def _auto_fix_test(self, test_snippet: str, error_log: str, files: list) -> tuple[str, str]:
-        """使用 LLM 自动修复测试代码，返回 (修复后的代码, 修复说明)"""
-        file_signatures = self._extract_signatures(files)
-
-        fix_prompt = f"""你是一位 Python 调试专家。以下测试代码运行失败，请修复它。
-
-测试代码：
-```python
-{test_snippet}
-```
-
-错误日志：
-```
-{error_log[-1500:]}
-```
-
-项目中的模块签名（供参考）：
-{file_signatures[:2000]}
-
-常见问题：
-1. 函数/类的参数名或数量不匹配
-2. 返回值的结构不符合预期
-3. 缺少必要的 import
-
-请输出 JSON：
-{{
-  "fixed_code": "修复后的完整测试代码（不要用围栏包裹）",
-  "fix_explanation": "修复说明（1-2句话）"
-}}"""
-
-        try:
-            response = self._call_llm(fix_prompt)
-            result = self._parse_json(response)
-            if result.get("parse_error"):
-                return "", "LLM 输出解析失败"
-            return result.get("fixed_code", ""), result.get("fix_explanation", "")
-        except Exception as e:
-            logger.warning(f"[ExecutorAgent] 自动修复失败: {e}")
-            return "", str(e)
-
-    def _extract_signatures(self, files: list) -> str:
-        """从代码文件中提取类和函数签名"""
-        import re
-        signatures = []
-        for file_info in files[:5]:  # 只看前5个文件
-            content = file_info.get("content", "")
-            path = file_info.get("path", "")
-            # 提取 class 和 def
-            classes = re.findall(r"^class\s+(\w+).*?:", content, re.MULTILINE)
-            funcs = re.findall(r"^\s{0,8}def\s+(\w+)\((.*?)\).*?:", content, re.MULTILINE)
-            if classes or funcs:
-                signatures.append(f"\n# {path}")
-                for cls in classes:
-                    signatures.append(f"class {cls}")
-                for name, args in funcs[:10]:  # 每个文件最多10个函数
-                    signatures.append(f"  def {name}({args[:50]})")
-        return "\n".join(signatures)
-
-    def _analyze_results(
-        self,
-        files: list,
-        install_log: str,
-        test_log: str,
-        test_success: bool,
-        fix_history: list
-    ) -> dict:
-        """使用 LLM 分析执行结果"""
-        fix_summary = ""
-        if fix_history:
-            fix_summary = f"\n自动修复历史（共 {len(fix_history)} 次）：\n"
-            for fix in fix_history:
-                fix_summary += f"- Attempt {fix['attempt']}: {fix['fix_applied'][:100]}\n"
-
-        analysis_prompt = f"""你是一位代码执行分析专家。请分析以下代码执行结果。
-
-代码结构：
-{json.dumps([f['path'] for f in files], ensure_ascii=False)}
-
-依赖安装日志：
-{install_log[:1000] if install_log else '（无）'}
-
-测试执行日志：
-{test_log[-2000:] if test_log else '（无）'}
-
-测试是否成功：{test_success}
-{fix_summary}
-
-请输出 JSON 格式的分析报告：
-{{
-  "success": true/false,
-  "summary": "执行结果总结（2-3句话）",
-  "errors": ["错误1", "错误2"],
-  "warnings": ["警告1"],
-  "suggestions": ["建议1", "建议2"],
-  "metrics": {{"key": "value"}}
-}}"""
-
-        analysis_raw = self._call_llm(analysis_prompt)
-        return self._parse_json(analysis_raw)
-
-    def _run_code_review(self, files: list) -> list:
-        """调用 code_review skill 审查代码"""
-        logger.info(f"[ExecutorAgent] 调用 code_review skill")
-        reviews = []
-        try:
-            registry = get_global_registry()
-            for file_info in files[:3]:  # 审查前3个文件
-                result = registry.execute("code_review", {
-                    "code": file_info["content"],
-                    "language": "python",
-                })
-                if result.get("success"):
-                    reviews.append({
-                        "file": file_info["path"],
-                        "score": result.get("score", 0),
-                        "issues": result.get("issues", []),
-                        "summary": result.get("summary", ""),
-                    })
-        except Exception as e:
-            logger.warning(f"[ExecutorAgent] code_review skill 调用失败: {e}")
-        return reviews
+                if line.startswith("HARNESS_METRICS="):
+                    values = json.loads(line.partition("=")[2])
+                elif line.startswith("{"):
+                    envelope = json.loads(line)
+                    if isinstance(envelope, dict):
+                        values = envelope.get("HARNESS_METRICS")
+            except ValueError:
+                continue
+            if isinstance(values, dict):
+                metrics.update({k: v for k, v in values.items()
+                                if isinstance(v, (int, float)) and not isinstance(v, bool)})
+        summary = (f"{kind}: {'passed' if success else 'failed'}. "
+                   + ("Quick validation only; no full experiment has been established."
+                      if kind == "smoke_test" else "See command logs for execution scope."))
+        return {"success": success, "error": error, "code_dir": str(code_dir),
+                "install_log": install_log, "test_log": log, "test_success": success,
+                "execution_kind": kind, "runs": runs,
+                "execution_policy": {
+                    "install_dependencies": self.install_dependencies,
+                    "run_entry_point": self.run_entry_point,
+                    "require_metrics": self.require_metrics,
+                    "required_metric_keys": self.required_metric_keys,
+                    "python_executable": self.python_executable,
+                    "timeout_seconds": self.timeout,
+                },
+                "analysis": {"success": success, "summary": summary, "metrics": metrics,
+                             "errors": [error] if error else []}}

@@ -1,96 +1,23 @@
-# research-harness 功能增强总结
+# research-harness 更新记录
 
-## 🎉 新增功能 (2026-06-07)
+## 2026-09-18 — 流程可靠性与产物校验
 
-### ExperimentLoopAgent — 实验训练循环 ⭐
+- 修复执行目录缺失、失败阶段误标完成、嵌套输入映射和无效默认思考预算。
+- 按依赖拓扑调度；代码执行成为审稿和论文的前置依赖。
+- 修复 no-resume、resume 自定义工作流、重试耗尽恢复及下游失效传播。
+- 加入结构校验、模型截断检测、按扩展名生成、代码语法与本地导入校验。
+- 限制输出路径，使用独立执行目录与 session 虚拟环境，记录真实日志和指标。
+- 修复 Markdown 围栏提取；参考文献从检索元数据生成独立 references.bib。
+- 接通 Skills 配置，明确依赖检查的能力边界；模型客户端延迟初始化。
+- 增加历史归档、原子持久化、进程锁、配置路径解析和非零失败退出码。
+- 用断言测试替换返回布尔值的假通过测试，并增加离线八阶段集成测试。
+- 增加 OpenAI 兼容协议适配，默认接入 Agnes AI Chat Completions。
 
-**位置**: `harness/agents/experiment_loop.py`
-
-**功能**:
-- 启动训练子进程（非阻塞 Popen），支持长时间 GPU 训练
-- 定期轮询训练输出（可配置间隔），从日志中提取指标（loss、accuracy、MAE、RMSE 等）
-- 多种智能退出条件，任一满足即优雅终止：
-  - `max_epochs`: 达到最大训练轮数
-  - `target_loss`: 损失降至目标值以下
-  - `patience`: 连续 N 轮无改善（早停）
-  - `max_time`: 超过最大运行时间
-  - `target_metric`: 指定指标达到阈值
-- 使用 LLM 分析实验结果（收敛性、最佳结果、建议）
-- 支持自定义正则模式提取训练日志中的指标
-- 优雅终止：先 SIGTERM，10s 后 SIGKILL
-
-**Workflow 集成**:
-- `experiment_loop` 阶段位于 `code_execution` 之后、`self_review` 之前
-- 实验结果自动注入到 self_review、paper_writing、documentation 阶段
-- self_review 现在依赖 [method_design, literature, **experiment_loop**]
-
-**配置** (`configs/default.yaml`):
-```yaml
-agents:
-  experiment_loop:
-    check_interval: 60          # 轮询训练状态间隔（秒）
-    max_epochs: 100             # 最大训练 epoch
-    target_loss: null           # 目标损失（null=不使用）
-    patience: 5                 # 早停耐心值
-    max_time: 86400             # 最大运行时间（秒）
-    monitor_metric: "loss"      # 主监控指标
-```
-
-**YAML 配置透传**: `main.py` 的 `make()` 函数现已自动将 YAML 中 `agents.<name>` 的非标准参数透传到 Agent 构造函数，支持任意 Agent 的专属配置。
-
-### API 切换
-
-- 主 API 切换回 **agnes-2.0-flash** (OpenAI 兼容)
-- DeepSeek V4 Pro 改为 Fallback 选项
-
----
+以下为早期版本说明；当前行为以 README 和 USAGE 为准。
 
 ## 🎉 新增功能
 
-### 1. Per-Session 日志与对话记录 ⭐
-
-**Per-Session 独立日志**:
-- 每个 session 自动在 `sessions/<session_id>/session.log` 记录完整日志
-- DEBUG 级别日志写入 session 目录，便于事后排查
-- 全局日志（harness.log）保持不变，两者同时记录
-
-**对话记录 (Conversation Log)**:
-- 每个 stage 的 LLM 对话自动保存为 `sessions/<session_id>/conversations/<stage_id>.json`
-- 记录内容包括：时间戳、模型、prompt、response、耗时、token 用量
-- 支持多轮对话（多轮调用的 stage 会累加记录）
-- 失败重试的对话也会被保留，便于调试 prompt
-
-**session_dir 注入**:
-- `WorkflowEngine` 运行时自动将 `session_dir` 注入 state，供所有 agent 使用
-- ExecutorAgent 等需要写磁盘的 agent 可正确找到输出路径
-
-**输出结构更新**:
-```
-sessions/<session_id>/
-├── session.log              # ⭐ Session 专属日志
-├── conversations/           # ⭐ 对话记录
-│   ├── planning.json
-│   ├── literature.json
-│   ├── method_design.json
-│   ├── coding.json
-│   ├── code_execution.json
-│   ├── self_review.json
-│   ├── paper_writing.json
-│   └── documentation.json
-├── code/                    # 代码文件
-├── output/                  # 论文等输出
-├── README.md                # 项目文档
-└── checkpoint.json          # 工作流状态
-```
-
-**实现细节**:
-- `BaseAgent.__init__` 初始化 `_conversations` 列表
-- `BaseAgent._call_llm` / `_call_llm_with_history` 每次调用后自动记录
-- `BaseAgent.clear_conversations` / `save_conversations` 由 WorkflowEngine 调度
-- `WorkflowEngine._run_stage` 在每个 stage 前后清空/保存对话
-- `main.py:cmd_run` 为每个 session 添加专属 FileHandler
-
----
+### 1. 自主代码执行 (ExecutorAgent)
 
 **位置**: `harness/agents/executor.py`
 
@@ -263,23 +190,12 @@ research-harness/
 │   │   └── skill.py                    # ⭐ Skill 系统核心
 │   ├── agents/
 │   │   ├── executor.py                 # ⭐ 代码执行 Agent
-│   │   ├── documenter.py               # ⭐ 文档生成 Agent
-│   │   ├── revision.py                 # ⭐ 迭代修订 Agent (2026-06-06)
-│   │   └── skill_hunter.py             # ⭐ 社区 skill 发现 Agent (2026-06-06)
-│   ├── skills/                         # ⭐ Skills 模块
-│   │   ├── __init__.py
-│   │   ├── code_review.py
-│   │   ├── dependency_check.py
-│   │   ├── test_generation.py
-│   │   ├── paper_summary.py
-│   │   ├── citation_format.py
-│   │   ├── experiment_tracker.py
-│   │   ├── plot_generation.py
-│   │   └── latex_compile.py
-│   └── tools/
-│       ├── arxiv.py
-│       ├── code_runner.py
-│       └── skill_integrator.py          # ⭐ 社区 skill 集成 (2026-06-06)
+│   │   └── documenter.py               # ⭐ 文档生成 Agent
+│   └── skills/                         # ⭐ Skills 模块
+│       ├── __init__.py
+│       ├── code_review.py
+│       ├── dependency_check.py
+│       └── test_generation.py
 ├── configs/
 │   └── skills.yaml                     # ⭐ Skills 配置
 ├── examples/                           # ⭐ 示例代码
@@ -464,131 +380,22 @@ class MyAgent(BaseAgent):
 
 ---
 
-## 🎉 新增功能（2026-06-06）
+## ✅ 测试结果
 
-### 1. 迭代修订系统
+所有新功能已通过测试：
 
-**RevisionAgent** (`harness/agents/revision.py`):
-- 基于审稿意见智能决策是否需要修订
-- 支持四种修订类型：code / experiment / baseline / writing
-- 自动制定修订计划并清除已完成阶段
-- WorkflowEngine 支持迭代执行，最多 5 轮
-
-**WorkflowEngine 迭代机制**:
-- `_run_stage()` 返回 `(state, rerun_triggered)` 元组
-- RevisionAgent 输出 `rerun_stages` 后自动清除相关阶段状态
-- 立即中断当前迭代，开始新一轮执行
-- 修订后重新通过代码执行和自我审稿
-
-**工作流更新** (`workflows/research.yaml`):
-- 新增 `revision` 阶段（在 self_review 之后）
-- 完整流程：planning → literature → method_design → coding → code_execution → self_review → **revision** → paper_writing → documentation
-
-### 2. 社区 Skill 自动获取系统
-
-**SkillHunterAgent** (`harness/agents/skill_hunter.py`):
-- 分析失败原因，识别缺失的能力
-- 从 GitHub / PyPI / HuggingFace 搜索相关工具
-- 评估候选 skill 的质量、安全性、兼容性
-- 输出结构化推荐（含搜索关键词、集成策略、风险评估）
-
-**SkillIntegrator** (`harness/tools/skill_integrator.py`):
-- **下载模块**：
-  - GitHub: git clone 或 zip 下载，支持单文件和完整仓库
-  - PyPI: pip install 到隔离目录
-  - HuggingFace: huggingface_hub 下载（自动跳过大权重文件），备选 HTTP 下载
-  - 通用 URL 直链下载
-- **安全模块**：
-  - 静态 AST 扫描：检测 os/subprocess/socket/ctypes/eval/exec/compile 等危险调用
-  - 许可证验证：MIT/Apache/BSD 可信，GPL/AGPL 警告，无许可证标记
-  - 文件大小限制：单文件最大 10MB
-- **沙盒执行**：
-  - 隔离子进程执行，受限 builtins（阻止 socket/ctypes/code/multiprocessing）
-  - 60s 超时保护
-  - 通过 stdout 标记协议传递结果
-- **生命周期管理**：
-  - `install/remove/list` 社区 skills
-  - manifest.json 持久化管理
-  - CommunitySkill 动态 wrapper
-
-**WorkflowEngine 自动触发** (`harness/core/workflow.py`):
-- 新增 `auto_skill_hunt` 参数控制自动搜索开关
-- `_try_auto_resolve()` 方法：失败后自动调用 SkillHunter → SkillIntegrator
-- 集成成功后自动刷新 SkillRegistry 并重置失败阶段重试
-- 异常安全：ImportError 等异常静默降级，不影响正常流程
-
-**配置更新** (`configs/skills.yaml`):
-```yaml
-auto_skill_hunt:
-  enabled: true         # 失败时自动从社区搜索
-  max_search_attempts: 3
-```
-
-### 3. 真实数据与文献增强
-
-**arXiv API 集成** (`harness/tools/arxiv.py`):
-- 真实 arXiv API 调用（非模拟）
-- 指数退避重试（1s → 2s → 4s），处理 429 限流
-- 按项目/方法/任务三维度搜索
-
-**数据集路径注入**:
-- ExecutorAgent 通过环境变量 `DATASET_PATH` 传递数据集路径
-- 消除硬编码路径和示例数据依赖
-
-### 4. 代码质量保障
-
-**自动修复循环**:
-- LLM 驱动的测试失败检测和修复
-- 最多 N 轮自动修复迭代
-- 逐文件写入和测试运行
+1. ✅ ExecutorAgent 和 DocumenterAgent 导入成功
+2. ✅ Skills 注册和调用正常
+3. ✅ main.py 更新后运行正常
+4. ✅ demo_skills.py 演示成功
 
 ---
 
-## 🐛 Bug 修复（2026-05-24）
+## 📚 文档
 
-### Critical
-- **WriterAgent LaTeX 模板崩溃**: `_LATEX_TEMPLATE.format()` 在 LLM 生成的 LaTeX 内容包含花括号时会抛出 KeyError。已修复为在插值前转义花括号
-- **CheckpointManager.load() JSON 损坏处理**: 当 checkpoint.json 损坏时不再崩溃，改为自动备份并返回空状态，支持手动恢复
-
-### High
-- **ExecutorAgent 误报失败**: 当不存在 test_snippet 时 `test_success` 初始化为 `False` 导致始终报告失败。改为 `None`（无测试），并据此调整成功判断逻辑
-- **ExecutorAgent 依赖安装失败后继续运行**: pip install 失败时不再盲目运行测试。先检查 `install_ok`，失败时跳过测试并记录原因
-- **fetch_paper 网络异常处理**: 增加了 URL 请求和 XML 解析的 try/except，网络故障时返回空 dict 而非崩溃
-- **Skills 配置关联**: `configs/skills.yaml` 中的 `enabled` 标志现在真正生效。`setup_skills()` 读取 YAML 并仅注册 enabled=true 的 skill
-
-### Medium
-- **PlannerAgent 死代码移除**: `parse_output()` 中不可达的 return 语句已删除
-- **Extended thinking 类属性修复**: `use_extended_thinking` 类属性不再被构造函数静默覆盖。参数未传入时回退到类属性值
-- **_call_llm_with_history extended thinking**: 多轮对话现在正确支持 extended thinking，与 `_call_llm` 行为一致
-- **Agent 导出完整性**: `ExecutorAgent` 和 `DocumenterAgent` 已加入 `harness/agents/__init__.py` 导出列表
-
-### Low
-- **内联 import 规整**: agent.py、coder.py、writer.py、documenter.py 中的 `import re` / `import json` 已移至模块顶层
-- **CheckpointManager 类型检查**: `load()` 返回非 dict JSON 值（null/string/array）时回退到空状态
-
----
-
-## ✅ 验证
-
-所有修改通过编译和基本功能验证，PlannerAgent 类属性默认值和构造函数覆盖均正常。
-
----
-
-## 🧩 新增 Skills（2026-05-24）
-
-### 文献与论文
-- **paper_summary**: 使用 LLM 对论文进行结构化摘要，自动提取贡献、方法类型、关键词、新颖度评估。支持 brief/standard/detailed 三种详细级别。可结合科研方向上下文评估关联度
-- **citation_format**: 验证 BibTeX 条目的必需字段和推荐字段，检测格式异常（year/author），标准化会议/期刊名称缩写（NeurIPS/CVPR/ICML 等），按指定格式重新输出
-
-### 实验与分析
-- **experiment_tracker**: 从实验日志或结构化数据中提取指标，自动生成 Markdown/JSON/Plain 格式对比表，找出各指标最优实验，生成文字总结。内置常见指标（loss/psnr/ssim/compression_rate 等）的正则解析模式
-- **plot_generation**: 生成 matplotlib 图表（折线图、柱状图、散点图、多曲线对比），支持 seaborn/IEEE 样式，自动推断图表类型
-
-### 排版
-- **latex_compile**: 编译 LaTeX 为 PDF（pdflatex/xelatex/lualatex），自动运行 bibtex 解析参考文献，检测编译错误和警告。无编译器时优雅降级
-
-### Skills 配置更新
-`configs/skills.yaml` 现包含全部 8 个 skill 的配置（3 个原有 + 5 个新增），新增按类别分组注释，`experiment_tracker` 默认 auto_trigger=true。
+- **README.md**: 项目概览和快速开始
+- **USAGE.md**: 详细使用指南
+- **examples/demo_skills.py**: Skills 系统演示
 
 ---
 
@@ -600,7 +407,5 @@ research-harness 现在具备：
 2. **可扩展的 Skills 系统**: 轻松添加新功能，无需修改核心代码
 3. **专业的输出**: 每个项目都有完整的 README.md 和可运行的代码
 4. **智能的代码验证**: 自动执行测试并分析结果
-5. **完善的日志系统**: 全局日志 + Per-Session 日志，问题追踪更便捷
-6. **对话可追溯**: 每个 stage 的 LLM 对话独立保存，包含 token 用量和耗时
 
 框架已经可以用于实际的科研工作流！

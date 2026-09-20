@@ -1,9 +1,15 @@
 # research-harness 默认配置
+project_root: ".."  # 相对于本配置文件
+skills_file: "configs/skills.yaml"
 
-# Anthropic API
-anthropic:
-  api_key: ""          # 留空则从环境变量 ANTHROPIC_API_KEY 读取
-  default_model: "claude-sonnet-4-6"
+# LLM API（当前接入 Agnes AI 的 OpenAI 兼容协议）
+llm:
+  protocol: "openai_compatible"
+  api_key: ""          # 留空则从 api_key_env 指定的环境变量读取
+  api_key_env: "AGNES_API_KEY"
+  base_url: "https://apihub.agnes-ai.com/v1"
+  default_model: "agnes-3.0-flash"
+  timeout: 120
 
 # 路径
 paths:
@@ -19,36 +25,24 @@ workflow:
 # Agent 配置
 agents:
   planner:
-    use_extended_thinking: true
-    thinking_budget: 8000
+    use_extended_thinking: false
   method:
-    use_extended_thinking: true
-    thinking_budget: 10000
+    use_extended_thinking: false
   reviewer:
-    use_extended_thinking: true
-    thinking_budget: 8000
+    use_extended_thinking: false
   literature:
     use_extended_thinking: false
   coder:
     use_extended_thinking: false
   writer:
     use_extended_thinking: false
-  experiment_loop:
-    check_interval: 60          # 轮询训练状态间隔（秒）
-    max_epochs: 100             # 最大训练 epoch
-    target_loss: null           # 目标损失（null=不使用）
-    patience: 5                 # 早停耐心值（连续无改善轮询次数）
-    max_time: 86400             # 最大运行时间（秒，默认24h）
-    monitor_metric: "loss"      # 主监控指标
-    dep_install_timeout: 7200   # 依赖安装单次超时（秒，2h）
-    dep_install_max_retries: 3  # 依赖安装最大重试次数
-    auto_fix_imports: true      # 自动 LLM 修复导入错误
-    preflight_check: true       # 训练前导入预检
-    max_train_retries: 5        # 训练失败后自动修复+重试次数
-    retry_cooldown: 10          # 重试间隔冷却（秒）
-    # CLI 参数自动注入：将 state 字段映射为训练脚本的命令行参数
-    # cli_arg_map: { "data_root": "dataset_path", "epochs": null }
-    # extra_train_args: ["--batch_size", "2", "--lr", "1e-4"]
+  executor:
+    timeout: 600
+    install_dependencies: true  # 安装到 session/.venv，不修改主环境
+    run_entry_point: false      # 默认仅快速验证；true 额外执行训练入口
+    entry_args: []              # 正式实验的入口参数，如 [--config, configs/default.yaml]
+    enable_code_review: false
+    require_metrics: false      # 正式入口可要求 HARNESS_METRICS=<numeric JSON>
 
 # 日志
 logging:

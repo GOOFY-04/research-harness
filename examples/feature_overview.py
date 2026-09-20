@@ -19,7 +19,7 @@ ExecutorAgent 可以：
   ✓ 自动写入生成的代码文件
   ✓ 安装依赖 (pip install -r requirements.txt)
   ✓ 运行测试代码并捕获输出
-  ✓ 使用 LLM 分析执行结果
+  ✓ 依据退出码与真实日志生成执行报告
   ✓ 可选：调用 code_review skill 进行代码审查
 
 示例输出：
@@ -81,7 +81,7 @@ Skills 是可插拔的功能模块，可以被 Agent 调用来完成特定任务
 
 2. dependency_check - 依赖检查
    输入: {"dependencies": "requirements.txt 内容"}
-   输出: {"outdated": [...], "conflicts": [...], "security_issues": [...]}
+   输出: {"satisfied": true, "conflicts": [], "security_issues": null}
 
 3. test_generation - 测试生成
    输入: {"code": "...", "test_framework": "pytest"}
@@ -159,7 +159,7 @@ def demo_workflow():
   │   └── requirements.txt
   ├── output/
   │   └── paper.tex         # 论文草稿
-  └── state.json            # 工作流状态
+  └── checkpoint.json            # 工作流状态
     """)
 
 
@@ -188,7 +188,7 @@ python main.py run --direction "你的研究方向"
 python examples/demo_skills.py
 
 # 4. 运行测试
-python tests/test_new_features.py
+python -m pytest -q
 
 # 5. 查看文档
 cat README.md

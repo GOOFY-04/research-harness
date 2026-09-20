@@ -5,7 +5,7 @@ stages:
   - id: planning
     name: 选题与研究规划
     agent: planner
-    max_retries: 2
+    max_retries: 4
     inputs:
       research_direction: ""   # 由 CLI 注入，见 main.py
     # 无依赖，第一个阶段
@@ -23,7 +23,7 @@ stages:
     name: 方法设计
     agent: method
     depends_on: [literature]
-    max_retries: 10
+    max_retries: 2
     input_from:
       research_question: planning.research_question
       research_gaps: literature.research_gaps
@@ -40,63 +40,23 @@ stages:
       overview: method_design.overview
       components: method_design.components
       algorithm: method_design.algorithm
-      interface_manifest: method_design.interface_manifest
-
-  - id: code_execution
-    name: 代码执行与验证
-    agent: executor
-    depends_on: [coding]
-    max_retries: 1
-    input_from:
-      files: coding.files
-      entry_point: coding.entry_point
-      dependencies: coding.dependencies
-      test_snippet: coding.test_snippet
-
-  - id: experiment_loop
-    name: 实验训练循环
-    agent: experiment_loop
-    depends_on: [code_execution]
-    max_retries: 0             # 内部已有闭环重试，不在 Workflow 层重试
-    input_from:
-      files: coding.files
-      entry_point: coding.entry_point
-      dependencies: coding.dependencies
-      test_snippet: coding.test_snippet
-      interface_manifest: method_design.interface_manifest
-    # 实验配置（可在 YAML 中覆盖 Agent 默认值）:
-    # experiment_config:
-    #   check_interval: 60       # 轮询间隔（秒）
-    #   max_epochs: 100          # 最大 epoch
-    #   target_loss: 0.01        # 目标损失
-    #   patience: 5              # 早停耐心
-    #   max_time: 86400          # 最大运行时间（秒）
-    #   monitor_metric: "loss"   # 主监控指标
 
   - id: self_review
     name: 自我审稿
     agent: reviewer
-    depends_on: [method_design, literature, experiment_loop]
+    depends_on: [method_design, literature, code_execution]
     max_retries: 1
     input_from:
       research_question: planning.research_question
       method: method_design
       research_gaps: literature.research_gaps
       key_baselines: literature.key_baselines
-      experiment_results: experiment_loop       # 实验结果为审稿提供实验证据
-
-  - id: revision
-    name: 修订规划
-    agent: revision
-    depends_on: [self_review]
-    max_retries: 1
-    input_from:
-      review_result: self_review
+      execution: code_execution
 
   - id: paper_writing
     name: 论文撰写
     agent: writer
-    depends_on: [revision, experiment_loop]
+    depends_on: [self_review]
     max_retries: 2
     input_from:
       research_question: planning.research_question
@@ -105,13 +65,26 @@ stages:
       method: method_design
       related_work_draft: literature.related_work_draft
       review: self_review
-      revision_notes: revision
-      experiment_results: experiment_loop       # 为 Experiments 节提供数据
+      execution: code_execution
+      implementation: coding.files
+      sources: literature.sources
+
+  - id: code_execution
+    name: 代码执行与验证
+    agent: executor
+    depends_on: [coding]
+    max_retries: 2
+    repair_from: coding
+    input_from:
+      files: coding.files
+      entry_point: coding.entry_point
+      dependencies: coding.dependencies
+      test_snippet: coding.test_snippet
 
   - id: documentation
     name: 文档生成
     agent: documenter
-    depends_on: [code_execution, experiment_loop, paper_writing]
+    depends_on: [code_execution, paper_writing]
     max_retries: 1
     input_from:
       research_question: planning.research_question
@@ -121,6 +94,4 @@ stages:
       entry_point: coding.entry_point
       dependencies: coding.dependencies
       run_instructions: coding.run_instructions
-      execution_summary: code_execution.analysis.summary
-      experiment_summary: experiment_loop.analysis.summary   # 实验总结
-      experiment_metrics: experiment_loop.final_metrics       # 实验最终指标
+      execution_summary: code_execution.analysis

@@ -6,14 +6,17 @@ WorkflowEngine — 工作流引擎 + 状态机
 """
 
 import logging
-from dataclasses import dataclass, field
+import ast
+from time import monotonic
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import yaml
 
 from .checkpoint import CheckpointManager
+from .io import validate_result
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ class StageSpec:
     input_from: dict[str, str] = field(default_factory=dict)  # 从其他阶段输出取值
     condition: Optional[str] = None     # 跳过条件（Python 表达式）
     timeout: Optional[int] = None       # 秒
+    repair_from: Optional[str] = None   # failed output may repair this upstream stage
 
 
 @dataclass
@@ -54,162 +58,232 @@ class WorkflowEngine:
         checkpoint: CheckpointManager,
         agent_registry: dict[str, Any],  # agent_name -> agent 实例
         skill_registry: Optional[Any] = None,  # SkillRegistry 实例
-        auto_skill_hunt: bool = False,  # 失败时自动搜索社区 skills
     ):
+        self.workflow_path = str(Path(workflow_path).resolve())
         self.spec = self._load_spec(workflow_path)
         self.checkpoint = checkpoint
         self.agents = agent_registry
         self.skill_registry = skill_registry
-        self.auto_skill_hunt = auto_skill_hunt
         self._stage_map = {s.id: s for s in self.spec.stages}
 
     # ------------------------------------------------------------------
     # 主入口
     # ------------------------------------------------------------------
 
-    def run(self, resume: bool = True) -> dict:
+    def run(self, resume: bool = True, inputs_override: Optional[dict] = None,
+            metadata: Optional[dict] = None) -> dict:
         """
         运行工作流。
         resume=True 时从上次 checkpoint 继续；False 时全新开始。
         返回最终 state。
         """
-        state = self.checkpoint.load() if resume else {}
-        if not state.get("workflow_name"):
-            state = self.checkpoint.load()  # 拿到 _empty_state 结构
-            state["workflow_name"] = self.spec.name
-            self.checkpoint.save(state)
-
-        # 将 session_dir 注入 state，供 ExecutorAgent 等需要写磁盘的 agent 使用
+        state = self.checkpoint.load() if resume else self.checkpoint.new_state()
+        if state.get("workflow_name") not in (None, self.spec.name):
+            raise ValueError("Checkpoint belongs to a different workflow; use --no-resume")
+        state["workflow_name"] = self.spec.name
+        state["workflow_path"] = self.workflow_path
         state["session_dir"] = str(self.checkpoint.session_dir)
+        changed_inputs = [sid for sid, value in (inputs_override or {}).items()
+                          if value != state.get("stage_inputs_override", {}).get(sid, {})]
+        state.setdefault("stage_inputs_override", {}).update(inputs_override or {})
+        state.setdefault("metadata", {}).update(metadata or {})
+        graph = {s.id: s.depends_on for s in self.spec.stages}
+        for removed in set(state["stages"]) - set(graph):
+            self.checkpoint.reset_stage(state, removed)
+        previous_specs = state.get("stage_specs", {})
+        state["stage_dependencies"] = graph
+        for sid in changed_inputs:
+            if sid in state["stages"]:
+                self.checkpoint.reset_stage(state, sid)
+        # Changed stage definitions invalidate cached consumers, including legacy checkpoints.
+        for stage in self.spec.stages:
+            old = previous_specs.get(stage.id)
+            if self.checkpoint.is_stage_done(state, stage.id):
+                output = self.checkpoint.get_stage_output(state, stage.id)
+                try:
+                    self._validate_output(stage, output)
+                    if old is not None and old != asdict(stage):
+                        raise ValueError("Stage definition changed")
+                    if any(not self.checkpoint.is_stage_done(state, dep) for dep in stage.depends_on):
+                        raise ValueError("Upstream stage is not complete")
+                except (ValueError, TypeError, KeyError, SyntaxError):
+                    self.checkpoint.reset_stage(state, stage.id)
+        state["stage_specs"] = {s.id: asdict(s) for s in self.spec.stages}
+        state["status"] = "running"
+        self.checkpoint.save(state)
 
         logger.info(f"[workflow] 开始运行: {self.spec.name}")
         logger.info(f"[workflow] 已完成阶段: {state['completed_stages']}")
 
-        # 迭代执行，直到没有阶段触发 rerun
-        max_iterations = 5  # 防止无限循环
-        for iteration in range(max_iterations):
-            logger.info(f"[workflow] 第 {iteration + 1} 次迭代")
-            any_rerun = False
-
-            for stage in self.spec.stages:
-                state, rerun_triggered = self._run_stage(state, stage)
-                if rerun_triggered:
-                    any_rerun = True
-                    logger.info(f"[workflow] 阶段 {stage.id} 触发重新执行，开始新一轮迭代")
-                    break  # 立即开始新一轮迭代
-
-                if state["stages"].get(stage.id, {}).get("status") == StageStatus.FAILED:
-                    logger.error(f"[workflow] 阶段 {stage.id} 失败，终止流程")
-                    logger.info("[workflow] 流程结束")
-                    return state
-
-            if not any_rerun:
-                logger.info("[workflow] 所有阶段已完成，无需重新执行")
+        for stage in self.spec.stages:
+            state = self._run_stage(state, stage)
+            if state["stages"].get(stage.id, {}).get("status") == StageStatus.FAILED:
+                logger.error(f"[workflow] 阶段 {stage.id} 失败，终止流程")
                 break
-        else:
-            logger.warning(f"[workflow] 达到最大迭代次数 {max_iterations}，停止执行")
 
-        logger.info("[workflow] 流程结束")
+        statuses = [state["stages"].get(s.id, {}).get("status") for s in self.spec.stages]
+        state["status"] = ("failed" if "failed" in statuses else "completed"
+                           if all(s in ("done", "skipped") for s in statuses) else "blocked")
+        if state["status"] == "completed":
+            state["current_stage"] = None
+        self.checkpoint.save(state)
+        logger.info("[workflow] 流程结束: %s", state["status"])
         return state
 
     # ------------------------------------------------------------------
     # 阶段执行
     # ------------------------------------------------------------------
 
-    def _run_stage(self, state: dict, stage: StageSpec) -> tuple[dict, bool]:
-        """
-        执行单个阶段。
-        返回 (更新后的state, 是否触发了重新执行)
-        """
-        rerun_triggered = False
-
+    def _run_stage(self, state: dict, stage: StageSpec) -> dict:
         # 已完成则跳过
         if self.checkpoint.is_stage_done(state, stage.id):
             logger.info(f"[{stage.id}] 已完成，跳过")
-            return state, rerun_triggered
+            return state
 
-        # 检查依赖
+        # Conditional skips propagate to consumers, rather than leaving a false success.
         for dep in stage.depends_on:
+            if state["stages"].get(dep, {}).get("status") == "skipped":
+                state["stages"][stage.id] = {"status": "skipped", "reason": f"Dependency {dep} skipped"}
+                self.checkpoint.save(state)
+                return state
             if not self.checkpoint.is_stage_done(state, dep):
                 logger.warning(f"[{stage.id}] 依赖 {dep} 未完成，跳过")
-                return state, rerun_triggered
+                return state
 
         # 检查条件
-        if stage.condition and self._eval_condition(stage.condition, state):
+        try:
+            skip = bool(stage.condition and self._eval_condition(stage.condition, state))
+        except (ValueError, KeyError, TypeError, SyntaxError) as exc:
+            return self.checkpoint.mark_stage_failed(state, stage.id, str(exc))
+        if skip:
             logger.info(f"[{stage.id}] 条件满足，跳过")
             state["stages"][stage.id] = {"status": StageStatus.SKIPPED}
             self.checkpoint.save(state)
-            return state, rerun_triggered
+            return state
 
         # 获取 agent
         agent = self.agents.get(stage.agent)
         if agent is None:
             raise ValueError(f"未注册的 agent: {stage.agent}")
 
-        # 构建输入：静态 inputs → 前序阶段输出 → CLI 注入的 override（优先级递增）
-        inputs = dict(stage.inputs)
-        for key, source in stage.input_from.items():
-            # source 格式: "stage_id.field" 或 "stage_id"
-            parts = source.split(".", 1)
-            src_output = self.checkpoint.get_stage_output(state, parts[0])
-            inputs[key] = src_output.get(parts[1]) if len(parts) > 1 and isinstance(src_output, dict) else src_output
-        # 合并 main.py 通过 state["stage_inputs_override"] 注入的参数
-        overrides = state.get("stage_inputs_override", {}).get(stage.id, {})
-        inputs.update(overrides)
+        # The final failed attempt is intentionally not repaired inside the
+        # loop because that invocation has no execution slot left. On resume,
+        # repair from its preserved output before rerunning unchanged code.
+        prior = state["stages"].get(stage.id, {})
+        prior_failure = prior.get("output") if prior.get("status") == StageStatus.FAILED else None
+        if prior.get("status") == StageStatus.RUNNING and not isinstance(prior_failure, dict):
+            prior_failure = next((item.get("output")
+                                  for item in reversed(prior.get("attempt_history", []))
+                                  if isinstance(item.get("output"), dict)
+                                  and item["output"].get("success") is False), None)
+        if stage.repair_from and isinstance(prior_failure, dict):
+            try:
+                state = self._repair_upstream(state, stage, prior_failure)
+                logger.info("[%s] repaired upstream stage %s before resumed execution",
+                            stage.id, stage.repair_from)
+            except Exception as repair_error:
+                message = f"Automatic resume repair failed: {repair_error}"
+                logger.error("[%s] %s", stage.id, message)
+                state["stages"][stage.id].setdefault("errors", []).append(message)
+                state["stages"][stage.id]["error"] = message
+                self.checkpoint.save(state)
+                # Preserve the failed execution slot. Running the unchanged
+                # upstream output would only repeat a known failure and spend
+                # one of this invocation's retry attempts.
+                return state
 
-        # 执行（带重试）
-        attempts = state["stages"].get(stage.id, {}).get("attempts", 0)
-        session_dir = state.get("session_dir", "")
-        for attempt in range(attempts, stage.max_retries + 1):
+        # 构建输入：静态 inputs → 前序阶段输出 → CLI 注入的 override（优先级递增）
+        # Retry allowance is per invocation; an interrupted/exhausted stage can resume.
+        for attempt in range(stage.max_retries + 1):
             state = self.checkpoint.mark_stage_started(state, stage.id)
             logger.info(f"[{stage.id}] 开始执行 (第 {attempt + 1} 次)")
-            # 清空对话缓存
-            if hasattr(agent, "clear_conversations"):
-                agent.clear_conversations()
             try:
+                output = None
+                inputs = dict(stage.inputs)
+                overrides = state.get("stage_inputs_override", {}).get(stage.id, {})
+                for key, source in stage.input_from.items():
+                    if key in overrides:
+                        continue
+                    parts = source.split(".")
+                    value = self.checkpoint.get_stage_output(state, parts[0])
+                    for part in parts[1:]:
+                        if not isinstance(value, dict) or part not in value:
+                            raise ValueError(f"Missing input field: {source}")
+                        value = value[part]
+                    inputs[key] = value
+                inputs.update(overrides)
+                if stage.timeout is not None:
+                    inputs["_timeout"] = stage.timeout
+                deadline = monotonic() + stage.timeout if stage.timeout else None
+                if hasattr(agent, "_llm"):
+                    agent._llm.deadline = deadline
                 output = agent.run(stage_id=stage.id, inputs=inputs, state=state)
+                if deadline and monotonic() > deadline:
+                    raise TimeoutError(f"Stage deadline exceeded: {stage.id}")
+                self._validate_output(stage, output)
+                if stage.agent == "coder" and self.skill_registry:
+                    results = {}
+                    for name in self.skill_registry.auto_triggers:
+                        skill_inputs = {"dependencies": output.get("dependencies", "")} if name == "dependency_check" else {
+                            "code": "\n\n".join(f["content"] for f in output.get("files", [])
+                                                 if f["path"].endswith(".py")), "language": "python"}
+                        results[name] = self.call_skill(name, skill_inputs)
+                        validate_result(results[name])
+                    output["skill_results"] = results
                 state = self.checkpoint.mark_stage_done(state, stage.id, output)
                 logger.info(f"[{stage.id}] 完成")
-                # 保存对话记录
-                if hasattr(agent, "save_conversations"):
-                    agent.save_conversations(session_dir, stage.id)
-
-                # 检查是否需要重新执行某些阶段（用于迭代）
-                if isinstance(output, dict) and output.get("needs_revision") and output.get("rerun_stages"):
-                    rerun_list = output["rerun_stages"]
-                    logger.info(f"[{stage.id}] 触发重新执行: {rerun_list}")
-                    for rerun_stage_id in rerun_list:
-                        if rerun_stage_id in state["completed_stages"]:
-                            state["completed_stages"].remove(rerun_stage_id)
-                            logger.info(f"[workflow] 清除阶段 {rerun_stage_id} 的完成状态")
-                        if rerun_stage_id in state["stages"]:
-                            state["stages"][rerun_stage_id] = {"status": StageStatus.PENDING, "attempts": 0}
-                    self.checkpoint.save(state)
-                    rerun_triggered = True
-
-                return state, rerun_triggered
+                return state
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"[{stage.id}] 第 {attempt + 1} 次失败: {error_msg}")
-                # 即使失败也保存对话记录（便于调试）
-                if hasattr(agent, "save_conversations"):
-                    agent.save_conversations(session_dir, stage.id)
+                state = self.checkpoint.mark_stage_failed(state, stage.id, error_msg, getattr(e, "output", output))
+                if attempt < stage.max_retries and stage.repair_from and isinstance(output, dict):
+                    try:
+                        state = self._repair_upstream(state, stage, output)
+                    except Exception as repair_error:
+                        message = f"Automatic repair failed: {repair_error}"
+                        logger.error("[%s] %s", stage.id, message)
+                        state["stages"][stage.id].setdefault("errors", []).append(message)
+                        state["stages"][stage.id]["error"] = message
+                        self.checkpoint.save(state)
+                        return state
                 if attempt >= stage.max_retries:
-                    state = self.checkpoint.mark_stage_failed(state, stage.id, error_msg)
+                    return state
 
-                    # 自动社区 skill 获取：失败后尝试从开源社区寻找解决方案
-                    if self.auto_skill_hunt:
-                        resolved = self._try_auto_resolve(stage, error_msg, state)
-                        if resolved:
-                            logger.info(f"[{stage.id}] 社区 skill 集成成功，重置阶段重试")
-                            state["stages"][stage.id] = {"status": StageStatus.PENDING, "attempts": 0}
-                            self.checkpoint.save(state)
-                            rerun_triggered = True
-                            return state, rerun_triggered
+        return state
 
-                    return state, rerun_triggered
+    def _repair_upstream(self, state: dict, stage: StageSpec, failure_output: dict) -> dict:
+        """Use concrete runtime feedback to update a completed generator stage."""
+        source_id = stage.repair_from
+        source = self._stage_map.get(source_id)
+        if source is None or not self.checkpoint.is_stage_done(state, source_id):
+            raise ValueError(f"Repair source is not complete: {source_id}")
+        repair_agent = self.agents.get(source.agent)
+        if repair_agent is None or not callable(getattr(repair_agent, "repair", None)):
+            raise ValueError(f"Agent does not support automatic repair: {source.agent}")
+        if hasattr(repair_agent, "_llm"):
+            repair_agent._llm.deadline = None
+        previous = self.checkpoint.get_stage_output(state, source_id)
+        repaired = repair_agent.repair(
+            stage_id=source_id,
+            previous_output=previous,
+            failure_output=failure_output,
+            state=state,
+        )
+        self._validate_output(source, repaired)
+        state["stages"][source_id]["output"] = repaired
+        state["stages"][source_id]["repair_attempts"] = (
+            state["stages"][source_id].get("repair_attempts", 0) + 1
+        )
+        self.checkpoint.save(state)
+        logger.info("[%s] repaired upstream stage %s; retrying execution", stage.id, source_id)
+        return state
 
-        return state, rerun_triggered
+    def _validate_output(self, stage: StageSpec, output: object) -> None:
+        validate_result(output)
+        agent = self.agents.get(stage.agent)
+        if agent is not None and hasattr(agent, "validate_output"):
+            agent.validate_output(output)
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -220,8 +294,14 @@ class WorkflowEngine:
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
 
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str) or not isinstance(raw.get("stages"), list):
+            raise ValueError("Workflow needs a name and a stages list")
+
         stages = []
         for s in raw.get("stages", []):
+            if (not isinstance(s, dict) or not isinstance(s.get("id"), str)
+                    or not isinstance(s.get("agent"), str)):
+                raise ValueError("Each stage needs string id and agent fields")
             stages.append(StageSpec(
                 id=s["id"],
                 name=s.get("name", s["id"]),
@@ -232,21 +312,55 @@ class WorkflowEngine:
                 input_from=s.get("input_from", {}),
                 condition=s.get("condition"),
                 timeout=s.get("timeout"),
+                repair_from=s.get("repair_from"),
             ))
 
+        ids = [s.id for s in stages]
+        if len(set(ids)) != len(ids) or not ids:
+            raise ValueError("Workflow needs unique stage IDs and at least one stage")
+        for stage in stages:
+            if (not isinstance(stage.depends_on, list) or not all(isinstance(d, str) for d in stage.depends_on)
+                    or not isinstance(stage.inputs, dict) or not isinstance(stage.input_from, dict)
+                    or not all(isinstance(ref, str) and all(ref.split('.')) for ref in stage.input_from.values())
+                    or not isinstance(stage.max_retries, int)
+                    or stage.repair_from is not None and not isinstance(stage.repair_from, str)
+                    or stage.timeout is not None and not isinstance(stage.timeout, (int, float))):
+                raise ValueError(f"Invalid stage configuration: {stage.id}")
+            if stage.max_retries < 0 or (stage.timeout is not None and stage.timeout <= 0):
+                raise ValueError(f"Invalid retries/timeout: {stage.id}")
+            # Input references are real dependencies, even if omitted from depends_on.
+            stage.depends_on = list(dict.fromkeys(stage.depends_on +
+                [ref.split('.')[0] for ref in stage.input_from.values()]))
+            if any(dep not in ids for dep in stage.depends_on):
+                raise ValueError(f"Unknown dependency: {stage.id}")
+            if stage.repair_from is not None and stage.repair_from not in stage.depends_on:
+                raise ValueError(f"repair_from must be an upstream dependency: {stage.id}")
+        ordered = []
+        remaining = list(stages)
+        while remaining:
+            ready = [s for s in remaining if set(s.depends_on) <= {x.id for x in ordered}]
+            if not ready:
+                raise ValueError("Workflow dependency cycle")
+            ordered.extend(ready)
+            remaining = [s for s in remaining if s not in ready]
         return WorkflowSpec(
             name=raw["name"],
             description=raw.get("description", ""),
-            stages=stages,
+            stages=ordered,
         )
 
     @staticmethod
     def _eval_condition(expr: str, state: dict) -> bool:
         """安全地求值跳过条件表达式，可访问 state 变量。"""
-        try:
-            return bool(eval(expr, {"__builtins__": {}}, {"state": state}))  # noqa: S307
-        except Exception:
-            return False
+        tree = ast.parse(expr, mode="eval")
+        allowed = (ast.Expression, ast.BoolOp, ast.UnaryOp, ast.Compare, ast.Subscript,
+                   ast.Name, ast.Load, ast.Constant, ast.List, ast.Tuple, ast.Dict,
+                   ast.And, ast.Or, ast.Not, ast.Eq, ast.NotEq, ast.Lt, ast.LtE,
+                   ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Is, ast.IsNot)
+        if any(not isinstance(node, allowed) or isinstance(node, ast.Name) and node.id != "state"
+               for node in ast.walk(tree)):
+            raise ValueError("Conditions only support state indexing and boolean comparisons")
+        return bool(eval(compile(tree, "<condition>", "eval"), {"__builtins__": {}}, {"state": state}))
 
     def status(self, state: dict) -> None:
         """打印当前工作流状态。"""
@@ -281,50 +395,3 @@ class WorkflowEngine:
         if self.skill_registry is None:
             return []
         return self.skill_registry.list_skills()
-
-    def _try_auto_resolve(self, stage: StageSpec, error_msg: str, state: dict) -> bool:
-        """
-        在阶段失败后自动调用 SkillHunter → SkillIntegrator 全流程。
-
-        尝试从社区获取新 skills 来解决问题，集成成功后返回 True。
-
-        Args:
-            stage: 失败的阶段
-            error_msg: 错误信息
-            state: 工作流状态
-
-        Returns:
-            True 如果成功集成了新的 skill
-        """
-        try:
-            from harness.tools.skill_integrator import auto_resolve_failure
-
-            # 收集上下文
-            task_description = f"Stage: {stage.id} ({stage.name}), Agent: {stage.agent}, Error: {error_msg}"
-            existing_skills = self.list_skills()
-
-            logger.info(f"[{stage.id}] 启动自动社区 skill 搜索...")
-            result = auto_resolve_failure(
-                stage_id=stage.id,
-                error_msg=error_msg,
-                task_description=task_description,
-                existing_skills=existing_skills,
-            )
-
-            if result and result["success"]:
-                # 刷新 skill_registry 引用
-                if self.skill_registry is not None:
-                    from harness.core.skill import get_global_registry
-                    self.skill_registry = get_global_registry()
-                logger.info(f"[{stage.id}] 社区 skill 集成成功: {result['skill_name']}")
-                return True
-
-            logger.info(f"[{stage.id}] 未找到合适的社区 skill")
-            return False
-
-        except ImportError as e:
-            logger.warning(f"[{stage.id}] SkillIntegrator 导入失败: {e}")
-            return False
-        except Exception as e:
-            logger.warning(f"[{stage.id}] 自动社区 skill 搜索异常: {e}")
-            return False

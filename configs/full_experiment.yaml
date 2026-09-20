@@ -1,0 +1,46 @@
+# Full end-to-end validation profile. Paths are relative to project_root.
+project_root: ".."
+skills_file: "configs/skills.yaml"
+
+llm:
+  protocol: "openai_compatible"
+  api_key: ""
+  api_key_env: "AGNES_API_KEY"
+  base_url: "https://apihub.agnes-ai.com/v1"
+  default_model: "agnes-3.0-flash"
+  timeout: 180
+
+paths:
+  sessions_dir: "sessions"
+  memory_dir: "memory"
+  workflows_dir: "workflows"
+
+workflow:
+  default: "workflows/research.yaml"
+  resume: true
+
+agents:
+  planner:
+    use_extended_thinking: false
+  method:
+    use_extended_thinking: false
+  reviewer:
+    use_extended_thinking: false
+  literature:
+    use_extended_thinking: false
+  coder:
+    use_extended_thinking: false
+  writer:
+    use_extended_thinking: false
+  executor:
+    timeout: 180
+    python_executable: "python"
+    install_dependencies: false
+    run_entry_point: true
+    entry_args: []
+    enable_code_review: false
+    require_metrics: true
+
+logging:
+  level: "INFO"
+  file: "harness.log"

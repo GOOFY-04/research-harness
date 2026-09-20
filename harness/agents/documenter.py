@@ -1,105 +1,80 @@
-"""
-DocumenterAgent — 生成项目文档
-
-功能：
-  1. 生成 README.md（项目介绍、安装、使用、实验流程）
-  2. 生成 requirements.txt（如果 coding 阶段没有）
-  3. 可选：生成 setup.py 或 pyproject.toml
-
-输出：
-  - readme: README.md 内容
-  - requirements: requirements.txt 内容（如果需要）
-"""
+"""Generate a grounded README and deterministic requirements text."""
 
 import json
 import logging
-import re
 
 from harness.core.agent import BaseAgent
+from harness.core.io import strip_outer_fence
 
 logger = logging.getLogger(__name__)
 
 
 class DocumenterAgent(BaseAgent):
+    required_fields = {"readme": str, "requirements": str}
     model = "claude-sonnet-4-6"
-    max_tokens = 8192
+    max_tokens = 4096
 
     def build_prompt(self, stage_id: str, inputs: dict, state: dict) -> str:
-        return ""  # 在 run() 中自定义
+        return ""
 
     def run(self, stage_id: str, inputs: dict, state: dict) -> dict:
-        """生成项目文档。"""
-        # 从上游阶段获取信息
         research_question = inputs.get("research_question", "")
         method_name = inputs.get("method_name", "")
         method_overview = inputs.get("method_overview", "")
-        files = inputs.get("files") or []
+        files = inputs.get("files", [])
         entry_point = inputs.get("entry_point", "")
         dependencies = inputs.get("dependencies", "")
         run_instructions = inputs.get("run_instructions", "")
         execution_summary = inputs.get("execution_summary", "")
+        if not isinstance(execution_summary, str):
+            execution_summary = json.dumps(execution_summary, ensure_ascii=False, indent=2)
 
-        # ------------------------------------------------------------------
-        # 生成 README.md
-        # ------------------------------------------------------------------
-        readme_prompt = f"""你是一位技术文档专家。请为以下研究项目生成一份完整的 README.md。
+        readme_prompt = f"""You are a technical documentation writer. Generate a concise README.md for this research project.
 
-研究问题：{research_question}
-方法名称：{method_name}
-方法概述：{method_overview}
-
-代码文件：
+Research question: {research_question}
+Method name: {method_name}
+Intended method overview: {method_overview}
+Code file paths:
 {json.dumps([f['path'] for f in files], ensure_ascii=False, indent=2)}
-
-入口文件：{entry_point}
-依赖：
+Entry point: {entry_point}
+Exact dependency specification:
 {dependencies}
-
-运行说明：
+Run instructions:
 {run_instructions}
-
-执行结果：
+Verified execution evidence:
 {execution_summary}
 
-请生成一份专业的 README.md，包含以下章节：
-1. 项目标题和简介（1-2段）
-2. 方法概述（3-4段，说明核心思想）
-3. 安装指南（pip install 命令）
-4. 快速开始（如何运行训练/推理）
-5. 代码结构（文件树和说明）
-6. 实验流程（如何复现论文结果）
-7. 引用（BibTeX 格式，如果发表）
-8. 许可证（MIT）
+Include only these useful sections when the supplied data supports them:
+1. Project title and scope
+2. Intended method overview
+3. Installation using the exact supplied dependencies
+4. Quick start using the exact entry point and run instructions
+5. Code structure based only on supplied paths
+6. Verified experiment result and limitations
 
-要求：
-- 使用 Markdown 格式
-- 代码块用 ```bash 或 ```python 包裹
-- 简洁专业，适合 GitHub 展示
-- 不要输出 JSON，直接输出 Markdown 文本"""
+Rules:
+- Return Markdown only, optionally wrapped in one markdown fence.
+- Treat the method overview as an intended design, not proof of implementation.
+- A smoke test establishes only that code runs on its test inputs.
+- Do not invent repository URLs, authors, publication status, citations, licenses,
+  copyright notices, years, benchmark claims, or implementation details.
+- Do not add Citation or License sections because no exact metadata was supplied.
+- Report supplied numeric metrics, including negative deltas, and state their scope.
+- Do not call a synthetic run a published result or evidence of real-world quality.
+"""
 
-        logger.info(f"[DocumenterAgent] 生成 README.md")
+        logger.info("[DocumenterAgent] generating README.md")
         readme_raw = self._call_llm(readme_prompt)
+        readme = strip_outer_fence(readme_raw, ("markdown", "md"))
+        output = {"readme": readme, "requirements": dependencies}
+        self.validate_output(output)
 
-        # 提取 markdown（去除可能的围栏）
-        md_match = re.search(r"```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```", readme_raw)
-        readme = md_match.group(1).strip() if md_match else readme_raw.strip()
-
-        # ------------------------------------------------------------------
-        # 组装输出
-        # ------------------------------------------------------------------
-        output = {
-            "readme": readme,
-            "requirements": dependencies,  # 直接使用 coding 阶段的依赖
-        }
-
-        # 写入记忆
         if self.memory:
             self.memory.append(
                 topic=stage_id,
                 content={"method": method_name, "readme_length": len(readme)},
                 tags=["DocumenterAgent", stage_id],
             )
-
         return output
 
     def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:

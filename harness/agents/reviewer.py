@@ -22,6 +22,7 @@ REVIEWER_SYSTEM = """你是一位顶级 AI 会议（NeurIPS/ICML/ICLR）的资�
 
 
 class ReviewerAgent(BaseAgent):
+    required_fields = {"weaknesses": list, "revision_plan": list, "recommendation": str}
     model = "claude-opus-4-6"
     use_extended_thinking = True
     thinking_budget = 8000
@@ -44,6 +45,9 @@ class ReviewerAgent(BaseAgent):
 {json.dumps(gaps[:3], ensure_ascii=False, indent=2)}
 
 主要基线：{', '.join(baselines[:5]) if baselines else '未指定'}
+
+真实代码执行报告（快速验证不等于完整实验）：
+{json.dumps(inputs.get('execution', {}), ensure_ascii=False)}
 
 请从以下维度评分（1-10分）并给出详细意见，输出 JSON：
 {{

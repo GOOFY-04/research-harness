@@ -60,6 +60,7 @@ class SkillRegistry:
 
     def __init__(self):
         self._skills: dict[str, Skill] = {}
+        self.auto_triggers: list[str] = []
 
     def register(self, skill: Skill) -> None:
         """注册一个 skill。"""
@@ -113,6 +114,12 @@ class SkillRegistry:
         logger.info(f"[SkillRegistry] 执行 skill: {name}")
         try:
             result = skill.execute(inputs)
+            if not isinstance(result, dict):
+                raise ValueError("Skill output must be a dictionary")
+            if result.get("success") is False or result.get("error"):
+                logger.error("[SkillRegistry] skill '%s' reported failure", name)
+                return result
+            result.setdefault("success", True)
             logger.info(f"[SkillRegistry] skill '{name}' 执行成功")
             return result
         except Exception as e:

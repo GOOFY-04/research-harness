@@ -1,305 +1,111 @@
-# research-harness 使用示例
+# 使用与扩展
 
-本文档展示如何使用 research-harness 的新功能。
+安装、环境配置和运行方式见 [README](README.md)。
 
-## 1. 基本使用
+## 自定义工作流
 
-启动一个新的研究项目：
+```yaml
+name: custom_research
+stages:
+  - id: planning
+    agent: planner
+    max_retries: 2
+    inputs:
+      research_direction: "时间序列建模"
+  - id: literature
+    agent: literature
+    input_from:
+      research_question: planning.research_question
+      keywords: planning.keywords
+```
 
 ```bash
-python main.py run --direction "基于 Transformer 的时间序列预测方法"
+python main.py run --direction "时间序列建模" --workflow custom.yaml --session custom
+python main.py resume --session custom
 ```
 
-这将自动执行以下阶段：
-1. **planning** - 选题与研究规划
-2. **literature** - 文献调研（真实 arXiv API + 智能重试）
-3. **method_design** - 方法设计
-4. **coding** - 代码实现
-5. **code_execution** - 代码执行与验证
-6. **self_review** - 自我审稿
-7. **revision** - 迭代修订（可回到 coding 重新执行）
-8. **paper_writing** - 论文撰写
-9. **documentation** - 文档生成
+即使 YAML 顺序不同，引擎也会按依赖排序；`input_from` 的来源自动成为依赖。CLI 的研究方向覆盖 planning 中的静态输入。修改已完成阶段的定义后恢复，会使该阶段和下游失效。
 
-## 2. 迭代修订
-
-### 2.1 工作机制
-
-`revision` 阶段由 RevisionAgent 驱动，基于审稿意见决定是否需要修订：
-
-- 总分 >= 8 且无 major 弱点 → 跳过修订
-- 有代码错误或 reproducibility 低 → 代码修订
-- 缺少关键实验或基线 → 实验修订
-- clarity 评分低 → 写作修订
-
-### 2.2 迭代流程
-
-```
-planning → literature → method_design → coding → code_execution
-    → self_review → revision
-        ├── needs_revision=true → 清除 coding/code_execution → 重新执行
-        └── needs_revision=false → paper_writing → documentation
-```
-
-最多 5 轮迭代，防止无限循环。
-
-## 3. 代码自动执行
-
-`code_execution` 阶段会：
-- 自动安装依赖（requirements.txt）
-- 运行测试代码验证正确性
-- 捕获执行日志和错误
-- 提取性能指标
-- 失败自动修复（LLM 驱动的修复循环）
-- 可选：调用 code_review skill 进行代码审查
-
-## 4. 社区 Skill 自动获取
-
-### 4.1 功能说明
-
-当某个阶段失败后，系统可以自动从开源社区搜索解决方案：
+`condition` 为真表示**跳过**该阶段，且依赖它的阶段也跳过。条件只允许对 state 使用下标、比较及布尔运算，不允许调用方法或任意 Python 代码：
 
 ```yaml
-# configs/skills.yaml
-auto_skill_hunt:
-  enabled: true         # 启用自动 skill 搜索
-  max_search_attempts: 3
+condition: "state['metadata']['skip_optional'] == True"
 ```
 
-### 4.2 工作流程
+必须预先提供所引用的 metadata；条件错误会使阶段失败。自定义工作流所有阶段都被跳过时，执行过程仍可正常结束，请通过各阶段状态判断产物是否存在。
 
-```
-阶段失败 (max_retries 耗尽)
-  └→ SkillHunterAgent 分析失败原因
-       └→ 搜索 GitHub / PyPI / HuggingFace
-            └→ SkillIntegrator 下载 + 安全扫描 + 沙盒验证
-                 └→ 注册到 SkillRegistry
-                      └→ 重置失败阶段 → 重新执行
-```
+`timeout` 单位为秒：内置模型请求共享该阶段的剩余时间，Executor 同时限制环境准备、安装和执行的总时间。任意自定义 Python Agent 内部阻塞不能由引擎强制抢占，自定义 Agent 应自行实现可取消的 I/O。没有阶段 timeout 时仍有模型请求超时和 Executor 超时。
 
-### 4.3 安全机制
-
-- 静态 AST 扫描：检测 os/subprocess/socket/ctypes/eval/exec 等危险调用
-- 许可证验证：MIT/Apache/BSD 可信，GPL 警告，无许可证拦截
-- 沙盒执行：隔离子进程 + 受限 builtins + 60s 超时
-
-### 4.4 管理社区 Skills
+## 自定义 Agent
 
 ```python
-from harness.tools.skill_integrator import SkillIntegrator
+from harness.core.agent import BaseAgent
+from harness.core.workflow import WorkflowEngine
+from harness.core.checkpoint import CheckpointManager
 
-integrator = SkillIntegrator()
-# 列出已安装的社区 skills
-print(integrator.list_installed())
-# 移除
-integrator.remove("some_skill")
+class SummaryAgent(BaseAgent):
+    required_fields = {"summary": str}
+
+    def build_prompt(self, stage_id, inputs, state):
+        return '输出 JSON 对象，包含非空 summary 字段。输入：' + str(inputs)
+
+    def parse_output(self, raw_text, stage_id, inputs):
+        return self._parse_json(raw_text)
+
+agent = SummaryAgent(model="claude-sonnet-4-6", max_tokens=4096)
+checkpoint = CheckpointManager("sessions", "summary")
+# YAML 中 agent: summary 对应这个注册名称
+engine = WorkflowEngine("summary.yaml", checkpoint, {"summary": agent})
+state = engine.run()
 ```
 
-## 5. 自动生成 README
+输出必须为 dict。用 `required_fields` 声明必需字段类型，空字符串默认不允许；可通过 `allow_empty_fields` 声明允许为空的文本字段。任何 `success=False`、非空 `error` 或 `parse_error=True` 都会失败。解析失败的原始响应会保存在失败阶段的 output 中供排查和 repair 使用。
 
-`documentation` 阶段会生成完整的 README.md，包含：
-- 项目介绍
-- 方法概述
-- 安装指南
-- 快速开始
-- 代码结构
-- 实验流程
-- 引用和许可证
+执行类阶段可以声明 `repair_from`，指向其已完成的上游生成阶段。失败输出为结构化 dict 时，引擎调用上游 Agent 的 `repair(stage_id, previous_output, failure_output, state)`，校验修复结果并更新上游检查点，然后再执行当前阶段。默认研究工作流使用 `repair_from: coding`。
 
-生成的 README.md 位于：`sessions/<session_id>/README.md`
+`BaseAgent` 延迟创建 SDK client，因此可以离线实例化，也可以注入 `client=` 测试替身。API 层关闭 SDK 隐式重试，由工作流统一管理重试次数。
 
-## 6. 使用 Skills
-
-### 6.1 内置 Skills
-
-框架提供了 8 个内置 skills：
-
-**代码质量**:
-1. **code_review** - 代码质量审查，输出评分/问题/改进建议
-2. **dependency_check** - 依赖包版本检查和安全漏洞扫描
-3. **test_generation** - 自动生成单元测试
-
-**文献与论文**:
-4. **paper_summary** - 论文结构化摘要，提取贡献/方法/关键词
-5. **citation_format** - BibTeX 验证与格式化，会议名标准化
-
-**实验与分析**:
-6. **experiment_tracker** - 实验指标追踪对比，自动生成对比表格
-7. **plot_generation** - matplotlib 图表生成（折线/柱状/散点/多曲线对比）
-
-**排版**:
-8. **latex_compile** - LaTeX 编译为 PDF，错误检测
-
-### 6.2 在 Agent 中调用 Skill
+## Skills
 
 ```python
-from harness.core.skill import get_global_registry
+from harness.core.skill import Skill, SkillRegistry
 
-# 在 Agent 的 run() 方法中
-registry = get_global_registry()
-result = registry.execute("code_review", {
-    "code": "def foo(): pass",
-    "language": "python"
-})
+class CountLines(Skill):
+    name = "count_lines"
+    description = "统计代码行数"
+
+    def validate_inputs(self, inputs):
+        return isinstance(inputs.get("code"), str)
+
+    def execute(self, inputs):
+        return {"success": True, "lines": len(inputs["code"].splitlines())}
+
+registry = SkillRegistry()
+registry.register(CountLines())
+print(registry.execute("count_lines", {"code": "print(1)"}))
 ```
 
-### 6.3 创建自定义 Skill
+独立 registry 避免不同工作流互相污染。全局 registry 保留用于旧代码，但不会自动注册内置技能。CLI 使用 `setup_skills(load_config())` 加载配置并创建自己的 registry；启用 Executor 的代码审查时共享该 registry。
+
+自动触发只支持已注册的技能。内置 dependency_check 的 `success` 表示检查过程完成，`satisfied` 表示请求的包和版本满足要求。`security_issues=None` 表示未检查漏洞，不能解释为没有漏洞。
+
+## 执行指标
+
+程序可以在 stdout 写入：
 
 ```python
-from harness.core.skill import Skill
-
-class MyCustomSkill(Skill):
-    name = "my_skill"
-    description = "我的自定义技能"
-
-    def validate_inputs(self, inputs: dict) -> bool:
-        return "required_param" in inputs
-
-    def execute(self, inputs: dict) -> dict:
-        # 实现你的逻辑
-        return {"success": True, "result": "..."}
-
-# 注册到全局注册表
-from harness.core.skill import get_global_registry
-registry = get_global_registry()
-registry.register(MyCustomSkill())
+import json
+print("HARNESS_METRICS=" + json.dumps({"loss": 0.2, "accuracy": 0.8}))
 ```
 
-## 7. 配置 Skills
+这些数字会进入 `code_execution.analysis.metrics`，连同命令、退出码和日志传入审稿与论文阶段。快速测试中的合成指标只能用于快速测试，不能充当真实数据集指标。应在正式实验中自行定义数据来源、划分、随机种子和基线。
 
-编辑 `configs/skills.yaml` 来启用/禁用 skills：
+依赖文本接受常规 PEP 508 包名、版本与环境条件，不接受 pip 参数、递归 requirements 文件或直接下载 URL。`install_dependencies=False` 时使用当前解释器，由使用者保证依赖已安装。
 
-```yaml
-auto_skill_hunt:
-  enabled: true         # 失败时自动从社区搜索 solutions
-  max_search_attempts: 3
+## 状态与历史
 
-skills:
-  code_review:
-    enabled: true
-    auto_trigger: false
-  experiment_tracker:
-    enabled: true
-    auto_trigger: true  # 在 code_execution 后自动触发
-```
+checkpoint 通过临时文件和原子替换写入。CLI 修改 session 前保存历史 checkpoint，旧代码/论文/README 失效时移动到 history，避免静默销毁之前的研究产物。不要直接修改 `completed_stages`；使用 reset-stage 维护依赖一致性。
 
-## 8. 查看输出
+`resume` 不会清除累计 attempts，但会为未完成阶段提供一轮新的重试机会。模型输出、代码或数据错误需修复相应输入后重试。工作流失败时，成功完成的前置阶段仍会保存和导出。
 
-完整的研究项目输出结构：
-
-```
-sessions/<session_id>/
-├── README.md              # 项目文档
-├── session.log            # Session 专属日志
-├── conversations/         # LLM 对话记录（每个 stage 的完整 prompt/response/token）
-├── code/                  # 代码文件
-│   ├── models/
-│   ├── train.py
-│   └── ...
-├── output/
-│   └── paper.tex         # 论文草稿
-├── checkpoint.json       # 工作流状态
-└── skills/               # 社区 skill 缓存
-    └── community/        # 自动获取的社区 skills
-```
-
-## 9. 高级用法
-
-### 9.1 启用代码审查
-
-修改 `main.py` 中的 `build_agent_registry()`：
-
-```python
-"executor": make(ExecutorAgent, "executor", timeout=600, enable_code_review=True),
-```
-
-### 9.2 列出所有可用 Skills
-
-```python
-from harness.core.skill import get_global_registry
-registry = get_global_registry()
-skills = registry.list_skills()
-for skill in skills:
-    print(f"{skill['name']}: {skill['description']}")
-```
-
-### 9.3 在工作流中调用 Skill
-
-在 Agent 的 `run()` 方法中：
-
-```python
-# 获取全局 skill 注册表
-from harness.core.skill import get_global_registry
-registry = get_global_registry()
-
-# 调用 skill
-result = registry.execute("test_generation", {
-    "code": source_code,
-    "test_framework": "pytest"
-})
-
-if result.get("success"):
-    test_code = result["test_code"]
-    # 使用生成的测试代码
-```
-
-### 9.4 启用社区 Skill 自动获取
-
-设置 `configs/skills.yaml`:
-
-```yaml
-auto_skill_hunt:
-  enabled: true
-  max_search_attempts: 3
-```
-
-或通过代码：
-
-```python
-from harness.tools.skill_integrator import SkillIntegrator
-
-integrator = SkillIntegrator()
-# 查看已安装的社区 skills
-for name, info in integrator.list_installed().items():
-    print(f"{name}: {info['source']} - {info['license']}")
-```
-
-## 10. 故障排查
-
-### 代码执行失败
-
-查看执行日志：
-```bash
-cat sessions/<session_id>/code_execution/output.json
-```
-
-### Skill 调用失败
-
-检查 skill 是否已注册：
-```python
-from harness.core.skill import get_global_registry
-print(get_global_registry().list_skills())
-```
-
-### 社区 Skill 获取失败
-
-查看已安装的社区 skills：
-```python
-from harness.tools.skill_integrator import SkillIntegrator
-print(SkillIntegrator().list_installed())
-```
-
-检查 auto_skill_hunt 是否启用：
-```yaml
-# configs/skills.yaml
-auto_skill_hunt:
-  enabled: true
-```
-
-### 依赖安装失败
-
-手动安装依赖：
-```bash
-cd sessions/<session_id>/code
-pip install -r requirements.txt
-```
+记忆按 topic 持久化，并用原子写入和 topic 文件锁避免并发写丢失。默认规划只回顾最近三条规划记录。记忆是历史上下文，不是可信实验数据库。

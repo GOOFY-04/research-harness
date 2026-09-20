@@ -1,224 +1,324 @@
-"""
-CoderAgent — 代码实现（多轮生成，避免单次输出截断）
-
-策略：
-  第1轮：生成文件清单（路径 + 描述，无内容）
-  第2轮起：逐文件生成完整代码内容
-输出：
-  - files: [{path, description, content}]
-  - entry_point, dependencies, run_instructions, test_snippet
-"""
-
+"""Generate typed files with shared interfaces and validate before publishing."""
+import ast
+import hashlib
 import json
 import logging
-import re
-
+from pathlib import Path
 from harness.core.agent import BaseAgent
+from harness.core.io import safe_path, strip_outer_fence
+from harness.tools.validation import validate_file, validate_files, validate_dependencies, validate_imports
 
 logger = logging.getLogger(__name__)
 
 
-class CoderAgent(BaseAgent):
-    model = "claude-sonnet-4-6"
-    max_tokens = 8192
-    enable_thinking = True  # agnes-2.0-flash 编码任务启用 thinking
+def interfaces(files):
+    result = {}
+    for info in files:
+        if not info["path"].endswith(".py"):
+            continue
+        tree = ast.parse(info["content"])
+        lines = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                lines.append(f"def {node.name}({ast.unparse(node.args)})")
+            elif isinstance(node, ast.ClassDef):
+                lines.append(f"class {node.name}:")
+                for member in node.body:
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        lines.append(f"  def {member.name}({ast.unparse(member.args)})")
+        result[info["path"]] = "\n".join(lines)
+    return result
 
-    def build_prompt(self, stage_id: str, inputs: dict, state: dict) -> str:
-        # 仅用于 WorkflowEngine 调用 run() 时传入 inputs，实际 prompt 在 run() 里构建
+
+def _tail(value, limit=5000):
+    value = str(value or "")
+    return value if len(value) <= limit else "...<truncated>\n" + value[-limit:]
+
+
+def execution_failure_context(output):
+    """Keep the actionable tail of subprocess output for an LLM repair request."""
+    runs = []
+    for run in output.get("runs", []) if isinstance(output, dict) else []:
+        if not isinstance(run, dict):
+            continue
+        runs.append({
+            "command": run.get("command"),
+            "returncode": run.get("returncode"),
+            "timed_out": run.get("timed_out", False),
+            "stdout": _tail(run.get("stdout")),
+            "stderr": _tail(run.get("stderr")),
+        })
+    return {
+        "error": output.get("error", "") if isinstance(output, dict) else str(output),
+        "execution_kind": output.get("execution_kind") if isinstance(output, dict) else None,
+        "execution_policy": output.get("execution_policy", {}) if isinstance(output, dict) else {},
+        "install_log": _tail(output.get("install_log")) if isinstance(output, dict) else "",
+        "runs": runs,
+    }
+
+
+def source_context(files, total_limit=60000, file_limit=16000):
+    """Bound repair prompts while retaining both ends of larger generated files."""
+    result, remaining = [], total_limit
+    for item in files:
+        if remaining <= 0:
+            break
+        content = str(item.get("content", ""))
+        limit = min(file_limit, remaining)
+        if len(content) > limit:
+            half = max(1, (limit - 32) // 2)
+            content = content[:half] + "\n...<truncated>...\n" + content[-half:]
+        result.append({"path": item.get("path"), "content": content})
+        remaining -= len(content)
+    return result
+
+
+class CoderAgent(BaseAgent):
+    required_fields = {"files": list, "entry_point": str, "dependencies": str,
+                       "run_instructions": str, "test_snippet": str}
+
+    def __init__(self, *args, allowed_dependencies=None, required_metric_keys=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.allowed_dependencies = allowed_dependencies
+        self.required_metric_keys = required_metric_keys or []
+        if self.allowed_dependencies is not None:
+            if (not isinstance(self.allowed_dependencies, list)
+                    or not all(isinstance(item, str) and item.strip()
+                               for item in self.allowed_dependencies)):
+                raise ValueError("allowed_dependencies must be a list of package names")
+        if (not isinstance(self.required_metric_keys, list)
+                or not all(isinstance(item, str) and item.strip() for item in self.required_metric_keys)):
+            raise ValueError("required_metric_keys must be a list of non-empty strings")
+
+    def build_prompt(self, stage_id, inputs, state):
         return ""
 
-    def run(self, stage_id: str, inputs: dict, state: dict) -> dict:
-        """多轮生成：先清单，再逐文件。"""
-        method_name = inputs.get("method_name", "")
-        components = inputs.get("components", [])
-        algorithm = inputs.get("algorithm", "")
-        overview = inputs.get("overview", "")
-        interface_manifest = inputs.get("interface_manifest", {})
+    def _call_repair(self, prompt):
+        """Retry a failed repair sub-request without rerunning unchanged code."""
+        for attempt in range(2):
+            try:
+                return self._call_llm(prompt)
+            except (ConnectionError, OSError, RuntimeError, TimeoutError) as exc:
+                message = str(exc).lower()
+                transient = any(token in message for token in
+                                ("timeout", "timed out", "connection", "temporarily", "unavailable"))
+                if attempt or not transient:
+                    raise
+                logger.warning("Coder repair sub-request failed; retrying once: %s", exc)
 
-        context = f"""方法名称：{method_name}
-方法概述：{overview}
-核心模块：
-{json.dumps(components, ensure_ascii=False, indent=2)}
-算法伪代码：
-{algorithm}"""
-
-        # 构建接口契约摘要（注入到 prompt 中）
-        contract_text = self._format_contract(interface_manifest)
-        if contract_text:
-            context += f"\n\n=== 接口契约（必须严格遵守） ===\n{contract_text}"
-
-        # ------------------------------------------------------------------
-        # 第1轮：获取文件清单（只要路径和描述，不要内容）
-        # ------------------------------------------------------------------
-        manifest_prompt = f"""你是一位 PyTorch 专家，请为以下方法规划代码文件结构。
-
-{context}
-
-请输出 JSON 文件清单（只需路径和描述，不需要代码内容）：
-{{
-  "files": [
-    {{"path": "相对路径", "description": "功能描述（一句话）"}}
-  ],
-  "entry_point": "主入口文件路径",
-  "dependencies": "requirements.txt 内容（每行一个包，带版本号）",
-  "run_instructions": "运行说明（markdown，3-5行）",
-  "test_snippet": "快速验证 forward pass 的测试代码（15-20行 Python）"
-}}
-
-要求：
-- 使用 PyTorch，每个核心模块独立成文件
-- 包含训练脚本和推理脚本
-- 文件数量控制在 6-10 个"""
-
-        logger.info(f"[CoderAgent] 第1轮：生成文件清单")
-        manifest_raw = self._call_llm(manifest_prompt)
-        manifest = self._parse_json(manifest_raw)
-
-        if manifest.get("parse_error"):
-            logger.warning("[CoderAgent] 文件清单解析失败，返回原始输出")
-            return {"raw": manifest_raw, "parse_error": True}
-
-        file_list = manifest.get("files", [])
-        logger.info(f"[CoderAgent] 清单包含 {len(file_list)} 个文件")
-
-        # ------------------------------------------------------------------
-        # 第2轮起：逐文件生成代码内容
-        # ------------------------------------------------------------------
-        filled_files = []
-        for i, file_info in enumerate(file_list):
-            path = file_info.get("path", f"file_{i}.py")
-            desc = file_info.get("description", "")
-            logger.info(f"[CoderAgent] 生成文件 ({i+1}/{len(file_list)}): {path}")
-
-            # 提取与本文件相关的接口契约
-            file_contract = self._get_file_contract(path, interface_manifest, file_list)
-
-            file_prompt = f"""请为以下文件生成完整的 Python 代码。
-
-项目背景：
-{context}
-
-当前文件：
-  路径：{path}
-  功能：{desc}
-
-已规划的其他文件：
-{json.dumps([f['path'] for f in file_list if f['path'] != path], ensure_ascii=False)}
-{file_contract}
-要求：
-1. 代码完整可运行，包含所有 import
-2. 包含类型注解和 docstring
-3. 如果是模型文件，确保 forward() 方法完整
-4. **严格遵守接口契约中的类名、方法名、参数名（不得自行变更）**
-5. 从其他文件导入时，使用契约中规定的精确名称
-6. 不要输出 JSON，直接输出 Python 代码（用 ```python 围栏包裹）"""
-
-            code_raw = self._call_llm(file_prompt)
-
-            # 提取代码块
-            code_match = re.search(r"```(?:python)?\s*\n?([\s\S]*?)\n?```", code_raw)
-            content = code_match.group(1).strip() if code_match else code_raw.strip()
-
-            filled_files.append({
-                "path": path,
-                "description": desc,
-                "content": content,
-            })
-
-        output = {
-            "files": filled_files,
-            "entry_point": manifest.get("entry_point", ""),
-            "dependencies": manifest.get("dependencies", ""),
-            "run_instructions": manifest.get("run_instructions", ""),
-            "test_snippet": manifest.get("test_snippet", ""),
-        }
-
-        # 写入记忆
+    def run(self, stage_id, inputs, state):
+        context = json.dumps(inputs, ensure_ascii=False, indent=2)
+        manifest = self._parse_json(self._call_llm(f"""You are implementing a research prototype.
+Design 6-10 files with consistent public interfaces. Return a JSON object:
+{{"files":[{{"path":"relative/path.py","description":"purpose","interface":"exact public class/function signatures"}}],
+"entry_point":"train.py","dependencies":"requirements.txt text","run_instructions":"Markdown"}}
+Use Python and honor the research design's dependency and resource constraints. Do not introduce
+PyTorch, OpenCV, GPU code, or other heavy packages unless the supplied design explicitly requires them.
+Allowed third-party dependencies: {json.dumps(self.allowed_dependencies, ensure_ascii=False)}.
+When this value is not null, every declared dependency must be in that list.
+List only PEP 508 package requirements, never pip flags or direct URLs.
+The entry point will be executed by the harness as a bounded end-to-end experiment. It must:
+- run with no mandatory command-line arguments and require no external files, downloads or credentials;
+- use deterministic seeds and a download-free synthetic benchmark tied to the research question;
+- train/evaluate the proposed method and at least one meaningful baseline on held-out data;
+- use fixed, equal update counts for compared methods; a wall-clock check may only be a safety stop and
+  must not determine the normal number of optimization steps;
+- finish on CPU in under three minutes with small default dimensions and epochs;
+- print one final line beginning HARNESS_METRICS= followed by a JSON object of numeric metrics,
+  including proposed and baseline scores plus an improvement/delta where meaningful;
+- include every configured metric key: {json.dumps(self.required_metric_keys, ensure_ascii=False)};
+- clearly label all results as synthetic-benchmark evidence, not publication claims.
+Research design:
+{context}"""))
+        if manifest.get("parse_error") or not isinstance(manifest.get("files"), list) or not manifest["files"]:
+            raise ValueError("Invalid code manifest")
+        validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
+        for info in manifest["files"]:
+            safe_path(state.get("session_dir", "."), info["path"])
+        files = []
+        for info in manifest["files"]:
+            path = info["path"]
+            extension = Path(path).suffix.lower()
+            language = {".py":"python", ".yaml":"yaml", ".yml":"yaml", ".json":"json",
+                        ".md":"markdown", ".txt":"text", ".toml":"toml"}.get(extension, "text")
+            prompt = f"""Generate the COMPLETE {language} file {path}.
+Return only the file content, optionally enclosed in a {language} fence.
+Honor the file extension: YAML/JSON files must contain data, never Python.
+Implement exactly the shared public interfaces, with all imports and complete bodies.
+Do not invent alternate names or parameters. Avoid work at import time.
+If this is the entry point, implement the complete deterministic experiment described in the manifest,
+including baseline comparison and the HARNESS_METRICS JSON line. Use fixed iteration counts for reproducibility;
+never use a wall-clock while-loop as the normal training schedule. Keep defaults bounded and download-free.
+Design: {context}
+Manifest: {json.dumps(manifest, ensure_ascii=False)}
+Existing implemented interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
+Current file: {json.dumps(info, ensure_ascii=False)}"""
+            for attempt in range(3):
+                content = strip_outer_fence(self._call_llm(prompt), (language, "yml", "md", "text"))
+                try:
+                    validate_file(path, content)
+                    break
+                except (ValueError, SyntaxError) as exc:
+                    if attempt == 2:
+                        raise
+                    prompt += f"\nPrevious output was invalid: {exc}. Regenerate the complete file."
+            files.append({**info, "content": content})
+        validate_files(files, state.get("session_dir", "."))
+        validate_imports(files, self.allowed_dependencies)
+        test = strip_outer_fence(self._call_llm(f"""Write a short Python smoke test for these exact interfaces.
+Use CPU and tiny synthetic inputs. Assert output shapes and finite values.
+Do not download datasets or weights, train a full model, or report synthetic scores as research results.
+Return only Python code.\n{json.dumps(interfaces(files), ensure_ascii=False)}
+Research context: {context}"""), ("python",))
+        compile(test, "<generated_test>", "exec")
+        output = {"files": files, "entry_point": manifest.get("entry_point", ""),
+                  "dependencies": manifest.get("dependencies", ""),
+                  "run_instructions": manifest.get("run_instructions", ""), "test_snippet": test}
+        self.validate_output(output)
         if self.memory:
-            self.memory.append(
-                topic=stage_id,
-                content={"method": method_name, "files": [f["path"] for f in filled_files]},
-                tags=["CoderAgent", stage_id],
-            )
-
+            self.memory.append(stage_id, {"files": [f["path"] for f in files]}, ["CoderAgent"])
         return output
 
-    def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:
+    def repair(self, stage_id, previous_output, failure_output, state):
+        """Repair generated files from concrete executor feedback.
+
+        The first request chooses existing files and explains the failure. Each
+        chosen file is then regenerated in full and the merged project receives
+        the same static validation as an initial coding result.
+        """
+        self.validate_output(previous_output)
+        files = [dict(item) for item in previous_output["files"]]
+        by_path = {item["path"]: item for item in files}
+        failure = execution_failure_context(failure_output)
+        sources = source_context(files)
+        contract = {
+            "entry_point": previous_output["entry_point"],
+            "dependencies": previous_output["dependencies"],
+            "test_snippet": previous_output["test_snippet"],
+        }
+        plan_prompt = f"""A generated research program failed during execution.
+Diagnose the runtime or installation failure and propose the smallest repair.
+Return JSON only:
+{{"diagnosis":"concrete root cause","files":["existing/path.py"],
+  "dependencies":null}}
+"files" must contain only existing generated paths and at most six entries.
+Use dependencies only when the requirements text itself must change; otherwise return null.
+If execution_policy.install_dependencies is false, dependencies must be null and the source must avoid incompatible optional packages.
+execution_policy.timeout_seconds is the total budget for the smoke test and entry point together, including all baselines and evaluation.
+When execution timed out, reduce bounded workload or split the total budget; do not merely add tolerance to an internal timer.
+Do not weaken or delete tests, remove the baseline, suppress errors, hard-code metrics, or skip the experiment.
+The supplied test snippet is an immutable interface contract. Repair source files to satisfy it.
+Execution failure:
+{json.dumps(failure, ensure_ascii=False, indent=2)}
+Execution contract:
+{json.dumps(contract, ensure_ascii=False, indent=2)}
+Current interfaces:
+{json.dumps(interfaces(files), ensure_ascii=False, indent=2)}
+Current source:
+{json.dumps(sources, ensure_ascii=False, indent=2)}"""
+        last_plan_error = None
+        for plan_attempt in range(3):
+            plan = self._parse_json(self._call_repair(plan_prompt))
+            try:
+                selected = plan.get("files") if isinstance(plan, dict) else None
+                dependency_change = plan.get("dependencies") if isinstance(plan, dict) else None
+                if (not isinstance(selected, list) or len(selected) > 6
+                        or not all(isinstance(path, str) and path in by_path for path in selected)
+                        or len(set(selected)) != len(selected)):
+                    raise ValueError("files must be a unique list of at most six existing paths")
+                # Models commonly emit [] to mean no dependency change. A list
+                # of requirement strings is also safe to normalize deterministically.
+                if isinstance(dependency_change, list):
+                    if not all(isinstance(item, str) for item in dependency_change):
+                        raise ValueError("dependencies list must contain only strings")
+                    dependency_change = "\n".join(item.strip() for item in dependency_change if item.strip()) or None
+                if dependency_change is not None and not isinstance(dependency_change, str):
+                    raise ValueError("dependencies must be text, a string list, or null")
+                install_enabled = failure.get("execution_policy", {}).get("install_dependencies")
+                if install_enabled is False and dependency_change is not None:
+                    raise ValueError("dependency installation is disabled; repair source files instead")
+                if dependency_change is not None:
+                    validate_dependencies(dependency_change, self.allowed_dependencies)
+                if not selected and dependency_change is None:
+                    raise ValueError("repair plan made no changes")
+                break
+            except (KeyError, TypeError, ValueError) as exc:
+                last_plan_error = exc
+                if plan_attempt == 2:
+                    raise ValueError(f"Invalid automatic repair plan: {exc}") from exc
+                plan_prompt += (f"\nYour previous plan was invalid: {exc}. "
+                                "Return a corrected JSON object matching the schema exactly.")
+        else:
+            raise ValueError(f"Invalid automatic repair plan: {last_plan_error}")
+
+        changed = []
+        before_hashes = {
+            path: hashlib.sha256(by_path[path]["content"].encode("utf-8")).hexdigest()
+            for path in selected
+        }
+        for path in selected:
+            info = by_path[path]
+            extension = Path(path).suffix.lower()
+            language = {".py":"python", ".yaml":"yaml", ".yml":"yaml", ".json":"json",
+                        ".md":"markdown", ".txt":"text", ".toml":"toml"}.get(extension, "text")
+            prompt = f"""Repair the COMPLETE {language} file {path} using the execution failure and project source below.
+Return only the complete replacement content, optionally enclosed in one {language} fence.
+Preserve public interfaces unless the failure proves an interface is inconsistent; keep all callers consistent.
+Do not hard-code expected outputs or metrics, disable assertions, catch-and-ignore failures, or remove experiment steps.
+Diagnosis: {plan.get('diagnosis', '')}
+Execution failure: {json.dumps(failure, ensure_ascii=False)}
+Immutable execution contract: {json.dumps(contract, ensure_ascii=False)}
+Project interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
+Project source: {json.dumps(source_context(files), ensure_ascii=False)}
+Current complete file: {info['content']}"""
+            for attempt in range(3):
+                content = strip_outer_fence(self._call_repair(prompt), (language, "yml", "md", "text"))
+                try:
+                    validate_file(path, content)
+                    break
+                except (ValueError, SyntaxError) as exc:
+                    if attempt == 2:
+                        raise
+                    prompt += f"\nThe replacement was invalid: {exc}. Return the corrected complete file."
+            if content != info["content"]:
+                info["content"] = content
+                changed.append(path)
+
+        repaired = dict(previous_output)
+        repaired["files"] = files
+        if dependency_change is not None:
+            repaired["dependencies"] = dependency_change
+        if not changed and repaired["dependencies"] == previous_output["dependencies"]:
+            raise ValueError("Automatic repair produced no effective change")
+        history = list(previous_output.get("repair_history", []))
+        history.append({
+            "diagnosis": str(plan.get("diagnosis", "")),
+            "changed_files": changed,
+            "file_hashes": {
+                path: {
+                    "before": before_hashes[path],
+                    "after": hashlib.sha256(by_path[path]["content"].encode("utf-8")).hexdigest(),
+                }
+                for path in selected
+            },
+            "dependencies_changed": repaired["dependencies"] != previous_output["dependencies"],
+            "failure": failure,
+        })
+        repaired["repair_history"] = history
+        self.validate_output(repaired)
+        if self.memory:
+            self.memory.append(stage_id, history[-1], ["CoderAgent", "automatic_repair"])
+        return repaired
+
+    def validate_output(self, output):
+        super().validate_output(output)
+        validate_files(output["files"], ".")
+        validate_imports(output["files"], self.allowed_dependencies)
+        validate_dependencies(output["dependencies"], self.allowed_dependencies)
+        entry = output["entry_point"].replace("\\", "/")
+        if entry not in {f["path"].replace("\\", "/") for f in output["files"]}:
+            raise ValueError("Entry point missing from generated files")
+        compile(output["test_snippet"], "<generated_test>", "exec")
+
+    def parse_output(self, raw_text, stage_id, inputs):
         return self._parse_json(raw_text)
-
-    # ========================================================================
-    # 接口契约辅助方法
-    # ========================================================================
-
-    @staticmethod
-    def _format_contract(manifest: dict) -> str:
-        """将 interface_manifest 格式化为可嵌入 prompt 的文本。"""
-        if not manifest:
-            return ""
-
-        lines = []
-        modules = manifest.get("modules", [])
-        if modules:
-            lines.append("【模块接口定义 - 必须精确遵守】")
-            for m in modules:
-                fname = m.get("file", "?")
-                desc = m.get("description", "")
-                lines.append(f"\n# {fname} — {desc}")
-                for exp in m.get("exports", []):
-                    lines.append(f"  {exp}")
-
-        contracts = manifest.get("cross_file_contracts", {})
-        if contracts:
-            lines.append("\n【跨文件导入关系 - 必须精确遵守】")
-            for file_name, imports in contracts.items():
-                lines.append(f"\n{file_name}:")
-                for imp in imports:
-                    lines.append(f"  {imp}")
-
-        data_fmt = manifest.get("data_format", {})
-        if data_fmt:
-            lines.append("\n【数据格式约定】")
-            for k, v in data_fmt.items():
-                lines.append(f"  {k}: {v}")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _get_file_contract(
-        file_path: str, manifest: dict, file_list: list
-    ) -> str:
-        """提取与当前文件相关的接口契约片段。"""
-        if not manifest:
-            return ""
-
-        parts = []
-
-        # 本文件的导出定义
-        modules = manifest.get("modules", [])
-        for m in modules:
-            if m.get("file") == file_path or m.get("file") in file_path:
-                exports = m.get("exports", [])
-                if exports:
-                    parts.append(
-                        f"\n**本文件必须导出以下接口（类名/方法名/参数名不得修改）：**\n"
-                        + "\n".join(f"  - {e}" for e in exports)
-                    )
-
-        # 本文件需要从其他文件导入的内容
-        contracts = manifest.get("cross_file_contracts", {})
-        file_imports = contracts.get(file_path, [])
-        if file_imports:
-            parts.append(
-                f"\n**本文件必须使用以下精确的导入语句：**\n"
-                + "\n".join(f"  {imp}" for imp in file_imports)
-            )
-
-        # 数据格式
-        data_fmt = manifest.get("data_format", {})
-        if data_fmt and ("dataset" in file_path.lower() or "data" in file_path.lower()):
-            parts.append(
-                "\n**数据格式约定（必须遵守）：**\n"
-                + "\n".join(f"  {k}: {v}" for k, v in data_fmt.items())
-            )
-
-        return "\n".join(parts) if parts else ""

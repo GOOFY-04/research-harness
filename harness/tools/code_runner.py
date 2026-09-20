@@ -9,6 +9,9 @@ import sys
 import tempfile
 import textwrap
 from pathlib import Path
+from harness.core.io import safe_path
+from .validation import validate_files
+from .process import run_command
 
 
 def run_python_snippet(
@@ -27,6 +30,8 @@ def run_python_snippet(
             "returncode": int,
         }
     """
+    if extra_packages:
+        raise ValueError("Use ExecutorAgent's isolated environment to install dependencies")
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
     ) as f:
@@ -34,18 +39,7 @@ def run_python_snippet(
         tmp_path = f.name
 
     try:
-        result = subprocess.run(
-            [sys.executable, tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return {
-            "success": result.returncode == 0,
-            "stdout": result.stdout[:2000],
-            "stderr": result.stderr[:2000],
-            "returncode": result.returncode,
-        }
+        return run_command([sys.executable, tmp_path], Path(tmp_path).parent, timeout, 2000)
     except subprocess.TimeoutExpired:
         return {
             "success": False,
@@ -69,9 +63,12 @@ def write_code_files(files: list[dict], base_dir: str | Path) -> list[str]:
         成功写入的文件路径列表
     """
     base = Path(base_dir)
+    if not files:
+        return []
+    validate_files(files, base)
     written = []
     for f in files:
-        target = base / f["path"]
+        target = safe_path(base, f["path"])
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f["content"], encoding="utf-8")
         written.append(str(target))

@@ -21,6 +21,7 @@ SYSTEM_PROMPT = """你是一位资深 AI 科研导师，擅长将模糊的研究
 
 
 class PlannerAgent(BaseAgent):
+    required_fields = {"research_question": str, "keywords": list, "novelty_hypothesis": str}
     model = "claude-opus-4-6"
     use_extended_thinking = True
     thinking_budget = 8000
@@ -53,7 +54,7 @@ class PlannerAgent(BaseAgent):
     {{"stage": "结果分析", "goal": "...", "expected_output": "..."}},
     {{"stage": "论文撰写", "goal": "...", "expected_output": "..."}}
   ],
-  "keywords": ["关键词1", "关键词2", "关键词3", "关键词4", "关键词5"],
+  "keywords": ["English arXiv search phrase 1", "English arXiv search phrase 2", "English arXiv search phrase 3"],
   "related_venues": ["顶会/期刊1", "顶会/期刊2"],
   "estimated_novelty": "high|medium|low",
   "risks": ["风险1", "风险2"]
@@ -61,3 +62,11 @@ class PlannerAgent(BaseAgent):
 
     def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:
         return self._parse_json(raw_text)
+
+    def validate_output(self, output: dict) -> None:
+        super().validate_output(output)
+        keywords = output.get("keywords") if isinstance(output, dict) else None
+        if (not isinstance(keywords, list) or not keywords
+                or not all(isinstance(item, str) and item.strip() and item.isascii()
+                           and re.search(r"[A-Za-z]", item) for item in keywords)):
+            raise ValueError("Planner keywords must be non-empty English ASCII arXiv search phrases")

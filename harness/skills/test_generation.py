@@ -14,28 +14,30 @@ import logging
 import os
 from typing import Any
 
-import anthropic
-
 from harness.core.skill import Skill
+from harness.core.llm import LLMClient
+from harness.core.io import strip_outer_fence
 
 logger = logging.getLogger(__name__)
 
 
 class TestGenerationSkill(Skill):
+    __test__ = False
     name = "test_generation"
     description = "为给定代码自动生成单元测试"
 
-    def __init__(self):
+    def __init__(self, **client_options):
         api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
         base_url = os.environ.get("ANTHROPIC_BASE_URL")
         client_kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
             client_kwargs["base_url"] = base_url
-        self._client = anthropic.Anthropic(**client_kwargs)
-        self._model = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6")
+        client_kwargs.update(client_options)
+        self._llm = LLMClient(**client_kwargs)
+        self._model = self._llm.model
 
     def validate_inputs(self, inputs: dict) -> bool:
-        return "code" in inputs
+        return isinstance(inputs.get("code"), str) and bool(inputs["code"].strip())
 
     def execute(self, inputs: dict) -> dict:
         code = inputs["code"]
@@ -58,17 +60,17 @@ class TestGenerationSkill(Skill):
 请直接输出测试代码（用 ```python 包裹），不要输出 JSON。"""
 
         try:
-            response = self._client.messages.create(
+            text = self._llm.create(
                 model=self._model,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = "".join([block.text for block in response.content if block.type == "text"])
 
             # 提取代码块
-            import re
-            code_match = re.search(r"```(?:python)?\s*\n?([\s\S]*?)\n?```", text)
-            test_code = code_match.group(1).strip() if code_match else text.strip()
+            test_code = strip_outer_fence(text, ("python",))
+            compile(test_code, "<generated_tests>", "exec")
+            if not test_code:
+                raise ValueError("Empty generated test")
 
             return {
                 "success": True,

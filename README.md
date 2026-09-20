@@ -1,307 +1,217 @@
 # research-harness
 
-面向长流程科研的智能体框架，支持从选题到论文撰写的全自动化流程。
+面向长流程科研的可恢复流水线：研究规划、文献检索、方法设计、代码生成与验证、审稿、论文草稿和项目文档。
 
-## ✨ 核心特性
+默认运行的是**代码快速验证**，不是完整训练或科研结论验证。论文以实际执行日志为依据，未完成的实验应明确标为 TODO；最终研究结论仍需真实数据、基线比较和人工审查。
 
-### 🔬 实验训练循环 ⭐ NEW
-- 启动 GPU 训练子进程并定期轮询状态
-- 多种智能退出条件：max_epochs、target_loss、patience、max_time、target_metric
-- 从训练日志中自动提取指标（loss、accuracy、MAE 等）
-- 使用 LLM 分析实验结果（收敛性、最佳结果、改进建议）
-- 实验结果自动注入论文撰写和文档生成阶段
+## 安装
 
-### 🔄 迭代修订系统
-- 基于审稿意见自动决定是否需要修订
-- 支持代码修订、实验补充、基线对比、写作改进
-- 自动清除已完成阶段并触发重新执行
-- 最多 5 轮迭代，防止无限循环
+需要 Python 3.10+。建议独立虚拟环境，以下为 Windows PowerShell：
 
-### 🌐 社区 Skill 自动获取
-- 遇到无法解决的问题时，自动从开源社区搜索解决方案
-- 支持 GitHub、PyPI、HuggingFace 三大来源
-- 静态安全扫描 + 许可证验证 + 沙盒隔离执行
-- 配置开关 `auto_skill_hunt.enabled`，可插拔式启用
-
-### 🔧 自主代码执行
-- 自动安装依赖并运行测试代码
-- 捕获执行日志和性能指标
-- 智能分析执行结果，失败自动修复
-
-### 📝 自动文档生成
-- 为每个项目生成完整的 README.md
-- 包含安装指南、使用说明、实验流程
-- 专业的 GitHub 展示格式
-
-### 🎯 Skills 系统
-- 可插拔的功能模块，轻松扩展框架能力
-- 内置 8 个 skills：
-  - **code_review**: 代码质量审查
-  - **dependency_check**: 依赖检查
-  - **test_generation**: 自动生成单元测试
-  - **paper_summary**: 论文结构化摘要
-  - **citation_format**: BibTeX 验证与格式化
-  - **experiment_tracker**: 实验指标追踪对比
-  - **plot_generation**: matplotlib 图表生成
-  - **latex_compile**: LaTeX 编译与错误检测
-- 支持自定义 skills + 社区 skill 自动发现
-
-## 🚀 快速开始
-
-### 安装
-
-```bash
-pip install -r requirements.txt
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env
 ```
 
-### 配置
+Linux/macOS 使用 `.venv/bin/python`，并用 `cp .env.example .env` 复制配置。仅运行项目可安装 `requirements.txt`。
 
-复制 `.env.example` 为 `.env` 并填入你的 API 凭据：
+默认配置已经接入 Agnes AI 的 OpenAI 兼容接口。在 `.env` 设置：
 
-```bash
-cp .env.example .env
+```dotenv
+AGNES_API_KEY=your_agnes_api_key
+AGNES_API_BASE=https://apihub.agnes-ai.com/v1
+AGNES_MODEL=agnes-3.0-flash
 ```
 
-编辑 `.env`：
+API 使用 Bearer Token 调用 `/v1/chat/completions`。已有系统环境变量优先于 `.env`。查看状态、重置、离线解析修复不需要 API 凭据。只有实际请求模型时才建立网络连接。
 
-```env
-ANTHROPIC_AUTH_TOKEN=your_api_key_here
-ANTHROPIC_BASE_URL=https://api.anthropic.com  # 可选
-ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-6
-ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-6
-```
+## 使用
 
-### 运行
-
-启动一个新的研究项目：
+下文 `python` 指已安装项目依赖的解释器；未激活环境时可替换为 `.\.venv\Scripts\python.exe`。
 
 ```bash
 python main.py run --direction "基于 Transformer 的时间序列预测方法"
-```
-
-## 📋 工作流阶段
-
-完整的研究流程包含 10 个阶段：
-
-1. **planning** - 选题与研究规划
-2. **literature** - 文献调研（真实 arXiv API + 智能重试）
-3. **method_design** - 方法设计
-4. **coding** - 代码实现
-5. **code_execution** - 代码执行与验证
-6. **experiment_loop** - 实验训练循环 ⭐ 新增（监控训练、智能退出）
-7. **self_review** - 自我审稿
-8. **revision** - 迭代修订
-9. **paper_writing** - 论文撰写
-10. **documentation** - 文档生成
-
-## 📂 输出结构
-
-```
-sessions/<session_id>/
-├── README.md              # 项目文档
-├── session.log            # Session 专属日志
-├── conversations/         # LLM 对话记录
-│   ├── planning.json
-│   ├── literature.json
-│   ├── method_design.json
-│   ├── coding.json
-│   ├── code_execution.json
-│   ├── self_review.json
-│   ├── revision.json
-│   ├── paper_writing.json
-│   └── documentation.json
-├── code/                  # 代码文件
-│   ├── models/
-│   ├── train.py
-│   ├── infer.py
-│   └── requirements.txt
-├── output/
-│   └── paper.tex         # 论文草稿
-├── checkpoint.json       # 工作流状态
-└── skills/               # 社区 skill 缓存
-    └── community/        # 自动获取的社区 skills
-```
-
-### 对话记录格式
-
-每个 `conversations/<stage_id>.json` 是一个 JSON 数组，每轮对话包含：
-
-```json
-{
-  "timestamp": "2026-05-24T20:47:04.085",
-  "model": "claude-sonnet-4-6",
-  "elapsed_seconds": 37.42,
-  "messages": [{"role": "user", "content": "..."}],
-  "response": "...",
-  "usage": {
-    "input_tokens": 1234,
-    "output_tokens": 456,
-    "cache_read_input_tokens": 0,
-    "cache_creation_input_tokens": 0
-  }
-}
-```
-
-## 🎯 使用 Skills
-
-### 查看可用 Skills
-
-```python
-from harness.core.skill import get_global_registry
-
-registry = get_global_registry()
-for skill in registry.list_skills():
-    print(f"{skill['name']}: {skill['description']}")
-```
-
-### 调用 Skill
-
-```python
-# 代码审查
-result = registry.execute("code_review", {
-    "code": "def foo(): pass",
-    "language": "python"
-})
-
-# 生成测试
-result = registry.execute("test_generation", {
-    "code": source_code,
-    "test_framework": "pytest"
-})
-```
-
-### 创建自定义 Skill
-
-```python
-from harness.core.skill import Skill
-
-class MySkill(Skill):
-    name = "my_skill"
-    description = "我的自定义技能"
-
-    def execute(self, inputs: dict) -> dict:
-        # 实现你的逻辑
-        return {"success": True, "result": "..."}
-
-# 注册
-registry.register(MySkill())
-```
-
-详细使用说明请参考 [USAGE.md](USAGE.md)。
-
-## 🛠️ 命令行工具
-
-```bash
-# 启动新研究
-python main.py run --direction "你的研究方向"
-
-# 从断点继续
-python main.py resume --session <session_id>
-
-# 查看进度
-python main.py status --session <session_id>
-
-# 重置失败阶段
-python main.py reset-stage --session <session_id> <stage_name>
-
-# 列出所有 session
+python main.py run --direction "研究方向" --session my_research
+python main.py resume --session my_research
+python main.py status --session my_research
 python main.py list
-
-# 修复解析错误
-python main.py repair --session <session_id>
+python main.py reset-stage --session my_research coding
+python main.py repair --session my_research
+python main.py run --direction "新的研究方向" --session my_research --no-resume
 ```
 
-## 📖 示例
+- `resume` 使用 session 保存的工作流路径，也接受 `--workflow custom.yaml`。
+- `reset-stage coding` 同时使所有下游结果失效，避免新代码与旧论文混用。
+- `--no-resume` 真正从空状态开始，旧 checkpoint 和产物归档到 `history/`。
+- 相同 session 改研究方向时，必须使用新 session 或 `--no-resume`。
+- 流程失败或被阻塞时退出码为 1；中断为 130；成功为 0。
+- 同一 session 的 CLI 写操作使用进程锁，避免并发覆盖。
+- CLI 的 `repair` 只重新解析保存的原始 JSON，不调用模型；代码执行失败时的自动修复由工作流中的 `repair_from: coding` 单独控制。
 
-查看 `examples/` 目录获取更多示例：
+## OpenCode 接入
 
-```bash
-# 演示 Skills 系统
-python examples/demo_skills.py
-```
+项目已经接入 [OpenCode fork](https://github.com/GOOFY-04/opencode/tree/research-harness)，对应实现和验证记录见 [Draft PR #1](https://github.com/GOOFY-04/opencode/pull/1)。本地开发布局为：
 
-## 🏗️ 架构
-
-```
+```text
 research-harness/
+├── main.py
 ├── harness/
-│   ├── core/              # 核心组件
-│   │   ├── agent.py       # Agent 基类
-│   │   ├── workflow.py    # 工作流引擎（迭代 + 自动 skill 获取）
-│   │   ├── checkpoint.py  # 状态持久化
-│   │   ├── memory.py      # 跨 session 记忆
-│   │   └── skill.py       # Skill 系统
-│   ├── agents/            # 专职 Agents
-│   │   ├── planner.py
-│   │   ├── literature.py
-│   │   ├── method.py
-│   │   ├── coder.py
-│   │   ├── executor.py
-│   │   ├── reviewer.py
-│   │   ├── revision.py    # 迭代修订
-│   │   ├── writer.py
-│   │   ├── documenter.py
-│   │   └── skill_hunter.py  # 社区 skill 发现
-│   ├── skills/            # Skills 模块
-│   │   ├── code_review.py
-│   │   ├── dependency_check.py
-│   │   ├── test_generation.py
-│   │   ├── paper_summary.py
-│   │   ├── citation_format.py
-│   │   ├── experiment_tracker.py
-│   │   ├── plot_generation.py
-│   │   └── latex_compile.py
-│   └── tools/             # 工具函数
-│       ├── arxiv.py
-│       ├── code_runner.py
-│       └── skill_integrator.py  # 社区 skill 集成
-├── workflows/             # 工作流定义
-│   └── research.yaml
-├── configs/               # 配置文件
-│   ├── default.yaml
-│   └── skills.yaml
-├── examples/              # 示例代码
-└── main.py                # CLI 入口
+└── opencode-fork/
 ```
 
-## 🔧 配置
+OpenCode 会自动发现父目录中的 harness；其他布局可设置 `RESEARCH_HARNESS_ROOT`。在 fork 中启动 OpenCode 后可使用：
 
-### Agent 配置 (configs/default.yaml)
+```powershell
+cd .\opencode-fork
+bun run dev:harness
+```
+
+必须通过该脚本启动，使 Bun 读取 `packages/opencode/tsconfig.json` 中的 Solid JSX 配置；不要从仓库根直接运行 `bun run packages/opencode/src/index.ts .`，否则 TUI 会被错误地按 React JSX 编译。
+
+- `/research <研究方向>`：启动研究流程；
+- `/research-resume <session>`：从 checkpoint 恢复；
+- `/research-status <session>`：只读检查状态。
+
+现在通过 `/research-board` 打开原生终端研究工作台。宽屏按“研究会话 / 实验流水线 / 证据账本”三栏组织，紧凑窗口隐藏会话栏，窄窗口改为纵向滚动。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置都在主视图中直接显示；执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、L 日志、U 恢复、X 重置、Esc 返回聊天。
+
+接入架构由 `harness/research_service.py` 和 `opencode-fork/packages/research/` 组成。研究服务调用既有 CLI 和 WorkflowEngine，OpenCode 负责交互；checkpoint 是阶段状态的唯一来源。`run/resume/repair/reset-stage` 立即返回后台任务的接收结果，**不表示研究已完成**。关闭聊天或看板后，已接收的研究任务继续运行。当前版本没有停止后台任务的 UI 命令。
+
+新建研究可选择快速验证、完整实验或 SfM 严格配置；该配置随后台任务保存，恢复时沿用。旧 CLI 会话没有配置记录，首次通过服务恢复时应显式指定原配置。harness 继续使用本目录的 `.env`，无需向 fork 复制 API 凭据。
+
+无需模型调用即可独立检查：
+
+```powershell
+cd .\opencode-fork
+bun run research status sfm_genview_camera_20260920 --config configs/sfm_full_experiment.yaml
+bun run research watch my_research
+bun run research logs my_research
+bun run research resume my_research
+```
+
+看板分别显示流程状态、worker 状态和实验证据；流程完成不会被解释为科研结论成立。详细架构、边界和测试见 [Research workbench 架构说明](opencode-fork/packages/research/README.md)。上述改动位于本地 fork，历史 PR 链接不代表这些新改动已发布。
+
+## 工作流
+
+```text
+planning → literature → method_design → coding → code_execution
+                                                   ↓
+                         documentation ← paper_writing ← self_review
+```
+
+引擎根据 `depends_on` 和 `input_from` 进行拓扑排序，支持任意深度的字典字段引用，例如 `code_execution.analysis.summary`。重复阶段、未知依赖、循环依赖、缺失输入字段会明确报错。
+
+只有结构校验通过且未返回 `success: false`、`error`、`parse_error` 的阶段才能完成。重试次数按每次调用计算，累计尝试次数和错误保存在 checkpoint；用 `resume` 可重新尝试耗尽重试或被中断的阶段。改变阶段定义、输入或发现无效缓存时会使相应阶段及下游失效。
+
+`code_execution` 默认把失败的子进程命令、返回码和截断日志反馈给 Coder。Coder 先生成最小修复计划，只重写计划中的已有文件，完整静态校验后更新 `coding` 检查点并重新执行。修复历史保存在 `coding.repair_history`，最多修复次数由执行阶段的 `max_retries` 控制。
+
+## 执行与产物校验
+
+- 代码按扩展名生成；检查 Python 语法、YAML/JSON、重复路径以及直接的本地模块导入。
+- 文件路径必须位于指定输出目录内，禁止绝对路径、目录穿越、Windows 设备名和替代数据流。
+- 每次执行使用新的 `execution_*/` 源码目录，避免旧文件污染导入。
+- 默认运行生成的快速测试；没有测试但有入口文件时运行入口。
+- 依赖安装到 `session/.venv`。安装失败、子进程失败或超时会使阶段失败，并阻止论文生成。
+- 正式入口可启用 `require_metrics: true`；此时退出码为 0 但缺少 `HARNESS_METRICS=<numeric JSON>` 仍会判定失败并进入修复流程。
+- 子进程日志有长度限制；超时或中断时清理进程树。模型服务凭据不传给生成程序。
+- 虚拟环境用于依赖隔离，**不是操作系统安全沙箱**；生成程序仍使用当前用户权限。
+- 仅从日志中的 `HARNESS_METRICS={"loss": 0.2}` 等 JSON 行提取数字指标，不由模型编造指标。
+- 文献元数据来自 arXiv；检索异常使阶段失败。参考文献按检索元数据确定性生成到 `references.bib`，正文引用键必须存在。
+- 模型输出截断、拒绝或为空时会明确失败。结构校验无法证明模型输出的学术正确性。
+
+## 配置
+
+`configs/default.yaml` 的 `project_root` 相对于该配置文件；其他项目路径相对于 `project_root`。默认配置不依赖命令运行目录。
+
+模型优先级：Agent 的 `model` 配置 → `llm.default_model` → 对应环境变量 → Agent 内置模型。默认统一使用 `agnes-3.0-flash`。
+
+`llm.protocol` 支持 `openai_compatible` 和 `anthropic`。若要切回 Anthropic，可把协议设为 `anthropic`，设置对应 Base URL、模型和 `api_key_env: ANTHROPIC_API_KEY`。
+
+启用扩展思考时，未显式配置的 `max_tokens` 会至少预留 4096 个输出 token；显式设置必须满足 `1024 <= thinking_budget < max_tokens`。
+
+正式执行入口可配置：
 
 ```yaml
 agents:
-  planner:
-    use_extended_thinking: true
-    thinking_budget: 10000
-  coder:
-    use_extended_thinking: false
+  executor:
+    timeout: 600
+    install_dependencies: true
+    run_entry_point: true
+    entry_args: [--config, configs/default.yaml]
+    require_metrics: true
 ```
 
-### Skills 配置 (configs/skills.yaml)
+需要自行准备入口所需数据、硬件和参数。成功运行入口不自动等于完成对照实验。默认 `run_entry_point: false`。
 
-```yaml
-# 社区 skill 自动发现与集成
-auto_skill_hunt:
-  enabled: true         # 失败时自动从社区搜索解决方案
-  max_search_attempts: 3
+仓库提供 `configs/full_experiment.yaml` 作为端到端验证配置。它会在 smoke test 后执行实验入口，
+并直接使用当前 Python 环境的依赖，适合已经安装 PyTorch 的环境：
 
-skills:
-  code_review:
-    enabled: true
-    auto_trigger: false
-  experiment_tracker:
-    enabled: true
-    auto_trigger: true  # 在 code_execution 后自动触发
+```bash
+python main.py --config configs/full_experiment.yaml run --direction "研究问题" --session full_test
 ```
 
-## 📝 许可证
+## 输出
 
-MIT License
+```text
+sessions/<session_id>/
+├── checkpoint.json
+├── README.md
+├── code/
+│   ├── ...生成代码...
+│   └── requirements.txt
+├── output/
+│   ├── paper.tex
+│   └── references.bib
+├── execution_*/       # 各次执行的独立源码
+├── .venv/            # 有依赖安装时创建
+└── history/          # 变更前 checkpoint 和失效产物
+```
 
-## 🤝 贡献
+论文草稿会检查字面 `\n` 和 `begin/end` 环境是否平衡；完整排版仍需要本机 TeX 环境编译，程序不自动安装 TeX。常规构建：
 
-欢迎提交 Issue 和 Pull Request！
+```bash
+cd sessions/<session_id>/output
+pdflatex paper.tex
+bibtex paper
+pdflatex paper.tex
+pdflatex paper.tex
+```
 
-## 📧 联系
+旧 session 可读取；首次恢复时会校验已有输出，缺失新依赖或不满足新格式的阶段会重跑。旧生成代码和论文不会被本次源码升级自动修补。
 
-如有问题，请提交 Issue。
+## Skills
+
+`configs/skills.yaml` 控制内置技能的 `enabled` 和 `auto_trigger`。启用自动触发后，在 coding 验证通过后执行，结果记录在 `coding.skill_results`。
+
+- `code_review`：模型代码审查。
+- `dependency_check`：检查当前解释器中包是否安装以及版本是否满足要求；不执行漏洞扫描或完整依赖求解。
+- `test_generation`：生成并语法校验测试；自动触发本身不执行这些测试。
+
+```python
+from main import load_config, setup_skills
+
+registry = setup_skills(load_config())
+print(registry.list_skills())
+result = registry.execute("dependency_check", {"dependencies": "numpy>=1.24"})
+print(result)
+```
+
+自定义技能继承 `Skill` 并通过 `SkillRegistry.register()` 注册。更多接口示例见 [USAGE.md](USAGE.md)。
+
+## 测试
+
+```bash
+python -m pytest -q
+python -m pip check
+```
+
+测试使用临时 session、模拟模型响应和真实的小型 Python 子进程，不调用付费 API、不下载训练数据。覆盖默认八阶段集成、CLI 恢复/失效传播、失败输出、路径限制、代码与文档校验、引用、配置和进程超时。
+
+## 代码结构
+
+- `harness/core/`：工作流、checkpoint、记忆、模型访问、路径与持久化。
+- `harness/agents/`：八个专职 Agent。
+- `harness/tools/`：arXiv、静态校验、子进程和文件写入。
+- `harness/skills/`：可注册的辅助功能。
+- `workflows/research.yaml`：默认流程与数据依赖。
+- `tests/`：离线回归与集成测试。
