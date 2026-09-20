@@ -115,6 +115,7 @@ planning → literature → method_design → coding → code_execution
 - 默认运行生成的快速测试；没有测试但有入口文件时运行入口。
 - 依赖安装到 `session/.venv`。安装失败、子进程失败或超时会使阶段失败，并阻止论文生成。
 - 正式入口可启用 `require_metrics: true`；此时退出码为 0 但缺少 `HARNESS_METRICS=<numeric JSON>` 仍会判定失败并进入修复流程。
+- `required_metric_keys` 校验指标是否齐全；`metric_constraints` 可为指标设置 `min`/`max` 数值边界。违反边界的真实执行会失败并把观测值反馈给自动修复器。
 - 子进程日志有长度限制；超时或中断时清理进程树。模型服务凭据不传给生成程序。
 - 虚拟环境用于依赖隔离，**不是操作系统安全沙箱**；生成程序仍使用当前用户权限。
 - 仅从日志中的 `HARNESS_METRICS={"loss": 0.2}` 等 JSON 行提取数字指标，不由模型编造指标。

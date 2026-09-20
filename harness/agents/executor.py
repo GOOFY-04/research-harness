@@ -13,7 +13,9 @@ from harness.core.io import safe_path
 from harness.core.skill import get_global_registry
 from harness.tools.code_runner import write_code_files
 from harness.tools.process import run_command
-from harness.tools.validation import validate_dependencies, validate_files, validate_imports
+from harness.tools.validation import (metric_constraint_errors, validate_dependencies,
+                                      validate_files, validate_imports,
+                                      validate_metric_constraints)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ class ExecutorAgent(BaseAgent):
     def __init__(self, *args, timeout=600, install_dependencies=True,
                  run_entry_point=False, entry_args=None, enable_code_review=False,
                  require_metrics=False, required_metric_keys=None, python_executable=None,
-                 allowed_dependencies=None, **kwargs):
+                 allowed_dependencies=None, metric_constraints=None, **kwargs):
         super().__init__(*args, **kwargs)
         if timeout <= 0:
             raise ValueError("Executor timeout must be positive")
@@ -37,6 +39,7 @@ class ExecutorAgent(BaseAgent):
         self.enable_code_review = enable_code_review
         self.require_metrics = bool(require_metrics)
         self.required_metric_keys = required_metric_keys or []
+        self.metric_constraints = validate_metric_constraints(metric_constraints)
         if (not isinstance(self.required_metric_keys, list)
                 or not all(isinstance(item, str) and item.strip() for item in self.required_metric_keys)
                 or len(set(self.required_metric_keys)) != len(self.required_metric_keys)):
@@ -131,6 +134,12 @@ class ExecutorAgent(BaseAgent):
                 error = f"HARNESS_METRICS is missing required keys: {', '.join(missing)}"
                 output.update(success=False, test_success=False, error=error)
                 output["analysis"].update(success=False, errors=[error])
+        if output["success"] and kind == "entry_point" and self.metric_constraints:
+            violations = metric_constraint_errors(output["analysis"]["metrics"], self.metric_constraints)
+            if violations:
+                error = "HARNESS_METRICS violates constraints: " + "; ".join(violations)
+                output.update(success=False, test_success=False, error=error)
+                output["analysis"].update(success=False, errors=[error])
         if self.enable_code_review and success:
             registry = getattr(self, "skill_registry", None) or get_global_registry()
             output["code_review"] = [
@@ -154,6 +163,9 @@ class ExecutorAgent(BaseAgent):
         missing = sorted(set(self.required_metric_keys) - set(metrics))
         if missing:
             raise ValueError(f"Cached HARNESS_METRICS is missing required keys: {', '.join(missing)}")
+        violations = metric_constraint_errors(metrics, self.metric_constraints)
+        if violations:
+            raise ValueError("Cached HARNESS_METRICS violates constraints: " + "; ".join(violations))
 
     def _report(self, success, code_dir, install_log, runs, kind, error=""):
         log = "\n".join(run["stdout"] + run["stderr"] for run in runs)
@@ -184,6 +196,7 @@ class ExecutorAgent(BaseAgent):
                     "run_entry_point": self.run_entry_point,
                     "require_metrics": self.require_metrics,
                     "required_metric_keys": self.required_metric_keys,
+                    "metric_constraints": self.metric_constraints,
                     "python_executable": self.python_executable,
                     "timeout_seconds": self.timeout,
                 },

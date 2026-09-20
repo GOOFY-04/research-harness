@@ -6,7 +6,8 @@ import logging
 from pathlib import Path
 from harness.core.agent import BaseAgent
 from harness.core.io import safe_path, strip_outer_fence
-from harness.tools.validation import validate_file, validate_files, validate_dependencies, validate_imports
+from harness.tools.validation import (validate_file, validate_files, validate_dependencies,
+                                      validate_imports, validate_metric_constraints)
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,12 @@ class CoderAgent(BaseAgent):
     required_fields = {"files": list, "entry_point": str, "dependencies": str,
                        "run_instructions": str, "test_snippet": str}
 
-    def __init__(self, *args, allowed_dependencies=None, required_metric_keys=None, **kwargs):
+    def __init__(self, *args, allowed_dependencies=None, required_metric_keys=None,
+                 metric_constraints=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.allowed_dependencies = allowed_dependencies
         self.required_metric_keys = required_metric_keys or []
+        self.metric_constraints = validate_metric_constraints(metric_constraints)
         if self.allowed_dependencies is not None:
             if (not isinstance(self.allowed_dependencies, list)
                     or not all(isinstance(item, str) and item.strip()
@@ -92,6 +95,17 @@ class CoderAgent(BaseAgent):
 
     def build_prompt(self, stage_id, inputs, state):
         return ""
+
+    def _dependency_instruction(self):
+        """Render the dependency policy for every independent model request."""
+        if self.allowed_dependencies == []:
+            return ("Dependency constraint: use only the Python standard library; "
+                    "do not import or declare any third-party package.")
+        if self.allowed_dependencies is not None:
+            allowed = json.dumps(self.allowed_dependencies, ensure_ascii=False)
+            return ("Dependency constraint: third-party imports and requirements are "
+                    f"limited to this allowlist: {allowed}.")
+        return "Dependency constraint: honor the dependency and resource limits in the research design."
 
     def _call_repair(self, prompt):
         """Retry a failed repair sub-request without rerunning unchanged code."""
@@ -107,7 +121,12 @@ class CoderAgent(BaseAgent):
                 logger.warning("Coder repair sub-request failed; retrying once: %s", exc)
 
     def run(self, stage_id, inputs, state):
-        context = json.dumps(inputs, ensure_ascii=False, indent=2)
+        research_context = dict(inputs)
+        direction = state.get("metadata", {}).get("research_direction")
+        if direction:
+            research_context["original_research_direction"] = direction
+        context = json.dumps(research_context, ensure_ascii=False, indent=2)
+        dependency_instruction = self._dependency_instruction()
         manifest = self._parse_json(self._call_llm(f"""You are implementing a research prototype.
 Design 6-10 files with consistent public interfaces. Return a JSON object:
 {{"files":[{{"path":"relative/path.py","description":"purpose","interface":"exact public class/function signatures"}}],
@@ -116,6 +135,7 @@ Use Python and honor the research design's dependency and resource constraints. 
 PyTorch, OpenCV, GPU code, or other heavy packages unless the supplied design explicitly requires them.
 Allowed third-party dependencies: {json.dumps(self.allowed_dependencies, ensure_ascii=False)}.
 When this value is not null, every declared dependency must be in that list.
+{dependency_instruction}
 List only PEP 508 package requirements, never pip flags or direct URLs.
 The entry point will be executed by the harness as a bounded end-to-end experiment. It must:
 - run with no mandatory command-line arguments and require no external files, downloads or credentials;
@@ -127,6 +147,7 @@ The entry point will be executed by the harness as a bounded end-to-end experime
 - print one final line beginning HARNESS_METRICS= followed by a JSON object of numeric metrics,
   including proposed and baseline scores plus an improvement/delta where meaningful;
 - include every configured metric key: {json.dumps(self.required_metric_keys, ensure_ascii=False)};
+- satisfy these executed-metric acceptance constraints: {json.dumps(self.metric_constraints, ensure_ascii=False)};
 - clearly label all results as synthetic-benchmark evidence, not publication claims.
 Research design:
 {context}"""))
@@ -136,6 +157,7 @@ Research design:
         for info in manifest["files"]:
             safe_path(state.get("session_dir", "."), info["path"])
         files = []
+        manifest_paths = [item["path"] for item in manifest["files"]]
         for info in manifest["files"]:
             path = info["path"]
             extension = Path(path).suffix.lower()
@@ -146,6 +168,7 @@ Return only the file content, optionally enclosed in a {language} fence.
 Honor the file extension: YAML/JSON files must contain data, never Python.
 Implement exactly the shared public interfaces, with all imports and complete bodies.
 Do not invent alternate names or parameters. Avoid work at import time.
+{dependency_instruction}
 If this is the entry point, implement the complete deterministic experiment described in the manifest,
 including baseline comparison and the HARNESS_METRICS JSON line. Use fixed iteration counts for reproducibility;
 never use a wall-clock while-loop as the normal training schedule. Keep defaults bounded and download-free.
@@ -157,6 +180,14 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
                 content = strip_outer_fence(self._call_llm(prompt), (language, "yml", "md", "text"))
                 try:
                     validate_file(path, content)
+                    # Validate each response while it can still be regenerated. Empty
+                    # placeholders preserve knowledge of local module roots without
+                    # requiring later files to have been generated already.
+                    import_context = [
+                        {"path": candidate, "content": content if candidate == path else ""}
+                        for candidate in manifest_paths
+                    ]
+                    validate_imports(import_context, self.allowed_dependencies)
                     break
                 except (ValueError, SyntaxError) as exc:
                     if attempt == 2:
@@ -165,12 +196,25 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
             files.append({**info, "content": content})
         validate_files(files, state.get("session_dir", "."))
         validate_imports(files, self.allowed_dependencies)
-        test = strip_outer_fence(self._call_llm(f"""Write a short Python smoke test for these exact interfaces.
+        test_prompt = f"""Write a short Python smoke test for these exact interfaces.
 Use CPU and tiny synthetic inputs. Assert output shapes and finite values.
 Do not download datasets or weights, train a full model, or report synthetic scores as research results.
+{dependency_instruction}
 Return only Python code.\n{json.dumps(interfaces(files), ensure_ascii=False)}
-Research context: {context}"""), ("python",))
-        compile(test, "<generated_test>", "exec")
+Research context: {context}"""
+        for attempt in range(3):
+            test = strip_outer_fence(self._call_llm(test_prompt), ("python",))
+            try:
+                compile(test, "<generated_test>", "exec")
+                validate_imports(
+                    files + [{"path": "__harness_smoke_test__.py", "content": test}],
+                    self.allowed_dependencies,
+                )
+                break
+            except (ValueError, SyntaxError) as exc:
+                if attempt == 2:
+                    raise
+                test_prompt += f"\nPrevious smoke test was invalid: {exc}. Regenerate it completely."
         output = {"files": files, "entry_point": manifest.get("entry_point", ""),
                   "dependencies": manifest.get("dependencies", ""),
                   "run_instructions": manifest.get("run_instructions", ""), "test_snippet": test}
@@ -191,6 +235,7 @@ Research context: {context}"""), ("python",))
         by_path = {item["path"]: item for item in files}
         failure = execution_failure_context(failure_output)
         sources = source_context(files)
+        dependency_instruction = self._dependency_instruction()
         contract = {
             "entry_point": previous_output["entry_point"],
             "dependencies": previous_output["dependencies"],
@@ -207,6 +252,7 @@ If execution_policy.install_dependencies is false, dependencies must be null and
 execution_policy.timeout_seconds is the total budget for the smoke test and entry point together, including all baselines and evaluation.
 When execution timed out, reduce bounded workload or split the total budget; do not merely add tolerance to an internal timer.
 Do not weaken or delete tests, remove the baseline, suppress errors, hard-code metrics, or skip the experiment.
+{dependency_instruction}
 The supplied test snippet is an immutable interface contract. Repair source files to satisfy it.
 Execution failure:
 {json.dumps(failure, ensure_ascii=False, indent=2)}
@@ -265,6 +311,7 @@ Current source:
 Return only the complete replacement content, optionally enclosed in one {language} fence.
 Preserve public interfaces unless the failure proves an interface is inconsistent; keep all callers consistent.
 Do not hard-code expected outputs or metrics, disable assertions, catch-and-ignore failures, or remove experiment steps.
+{dependency_instruction}
 Diagnosis: {plan.get('diagnosis', '')}
 Execution failure: {json.dumps(failure, ensure_ascii=False)}
 Immutable execution contract: {json.dumps(contract, ensure_ascii=False)}

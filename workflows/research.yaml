@@ -52,6 +52,8 @@ stages:
       research_gaps: literature.research_gaps
       key_baselines: literature.key_baselines
       execution: code_execution
+      implementation: coding.files
+      dependencies: coding.dependencies
 
   - id: paper_writing
     name: 论文撰写

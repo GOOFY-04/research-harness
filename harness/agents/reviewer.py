@@ -29,6 +29,23 @@ class ReviewerAgent(BaseAgent):
 
     def build_prompt(self, stage_id: str, inputs: dict, state: dict) -> str:
         rq = inputs.get("research_question", "")
+        original_direction = state.get("metadata", {}).get("research_direction", "")
+        if original_direction:
+            rq = (f"{rq}\n\nOriginal research direction and acceptance constraints: "
+                  f"{original_direction}")
+        implementation = inputs.get("implementation", [])
+        source_evidence = []
+        remaining = 30000
+        for item in implementation if isinstance(implementation, list) else []:
+            if remaining <= 0 or not isinstance(item, dict):
+                break
+            content = str(item.get("content", ""))[:min(6000, remaining)]
+            source_evidence.append({"path": item.get("path"), "content": content})
+            remaining -= len(content)
+        if source_evidence:
+            rq += ("\n\nExecuted implementation evidence (prefer this over early design hints):\n"
+                   + json.dumps({"dependencies": inputs.get("dependencies", ""),
+                                 "files": source_evidence}, ensure_ascii=False))
         method = inputs.get("method", {})
         gaps = inputs.get("research_gaps", [])
         baselines = inputs.get("key_baselines", [])

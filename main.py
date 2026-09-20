@@ -79,7 +79,7 @@ def build_agent_registry(config, memory):
             if key in cfg:
                 options[key] = cfg[key]
         if name in ("coder", "executor"):
-            for key in ("allowed_dependencies", "required_metric_keys"):
+            for key in ("allowed_dependencies", "required_metric_keys", "metric_constraints"):
                 if key in cfg:
                     options[key] = cfg[key]
         if name == "executor":

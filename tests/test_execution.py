@@ -67,6 +67,20 @@ def test_missing_required_metric_keys_fail_entry_point(tmp_path):
     assert result["execution_policy"]["required_metric_keys"] == ["rotation", "reprojection"]
 
 
+def test_metric_constraint_failure_reports_observed_value(tmp_path):
+    data = inputs(test="")
+    data["files"][1]["content"] = "print('HARNESS_METRICS={\"sample_count\": 200}')"
+    result = ExecutorAgent(
+        install_dependencies=False,
+        require_metrics=True,
+        required_metric_keys=["sample_count"],
+        metric_constraints={"sample_count": {"min": 600}},
+    ).run("exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is False
+    assert "sample_count=200" in result["error"]
+    assert result["execution_policy"]["metric_constraints"] == {"sample_count": {"min": 600}}
+
+
 def test_explicit_entry_run_after_test(tmp_path):
     result = ExecutorAgent(install_dependencies=False, run_entry_point=True).run(
         "exec", inputs(), {"session_dir":str(tmp_path)})

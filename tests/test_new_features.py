@@ -1,10 +1,13 @@
 """Real assertions, isolated registries, no credentials or network."""
+import json
 from types import SimpleNamespace
 import pytest
+from harness.agents.coder import CoderAgent
 from harness.core.skill import Skill, SkillRegistry
 from harness.skills import CodeReviewSkill, DependencyCheckSkill, TestGenerationSkill
 from harness.agents.executor import ExecutorAgent
 from harness.agents.documenter import DocumenterAgent
+from harness.agents.reviewer import ReviewerAgent
 
 
 def test_imports_and_instantiation_without_credentials(monkeypatch):
@@ -38,6 +41,78 @@ def test_dependency_constraints(monkeypatch):
     assert result["conflicts"] == [{"package": "numpy", "installed": "1.0", "required": ">=2"}]
     assert result["skipped"] == ["pytest"]
     assert result["security_issues"] is None
+
+
+def test_coder_repeats_stdlib_policy_for_each_generation_request(tmp_path, monkeypatch):
+    agent = CoderAgent(allowed_dependencies=[])
+    manifest = {
+        "files": [{"path": "main.py", "description": "entry", "interface": "def run()"}],
+        "entry_point": "main.py",
+        "dependencies": "",
+        "run_instructions": "python main.py",
+    }
+    replies = iter([
+        json.dumps(manifest),
+        "def run():\n    return 1\n",
+        "from main import run\nassert run() == 1\n",
+    ])
+    prompts = []
+
+    def respond(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(agent, "_call_llm", respond)
+    agent.run("coding", {}, {
+        "session_dir": str(tmp_path),
+        "metadata": {"research_direction": "use at least 600 observations"},
+    })
+
+    policy = "use only the Python standard library"
+    assert len(prompts) == 3
+    assert all(policy in prompt for prompt in prompts)
+    assert all("use at least 600 observations" in prompt for prompt in prompts)
+
+
+def test_coder_regenerates_file_with_disallowed_import(tmp_path, monkeypatch):
+    agent = CoderAgent(allowed_dependencies=[])
+    manifest = {
+        "files": [{"path": "main.py", "description": "entry", "interface": "def run()"}],
+        "entry_point": "main.py",
+        "dependencies": "",
+        "run_instructions": "python main.py",
+    }
+    replies = iter([
+        json.dumps(manifest),
+        "import numpy\ndef run():\n    return numpy.array([1])\n",
+        "def run():\n    return [1]\n",
+        "from main import run\nassert run() == [1]\n",
+    ])
+    prompts = []
+
+    def respond(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(agent, "_call_llm", respond)
+    output = agent.run("coding", {}, {"session_dir": str(tmp_path)})
+
+    assert output["files"][0]["content"].startswith("def run")
+    assert "outside the configured dependency allowlist: numpy" in prompts[2]
+
+
+def test_reviewer_prefers_executed_source_over_early_design_hint():
+    prompt = ReviewerAgent().build_prompt("self_review", {
+        "research_question": "Does the method work?",
+        "method": {"overview": "An early hint suggested numpy."},
+        "implementation": [{"path": "main.py", "content": "import statistics\n"}],
+        "dependencies": "",
+    }, {"metadata": {"research_direction": "standard library only"}})
+
+    assert "prefer this over early design hints" in prompt
+    assert '"path": "main.py"' in prompt
+    assert "import statistics" in prompt
+    assert "standard library only" in prompt
 
 
 def test_dependency_missing(monkeypatch):

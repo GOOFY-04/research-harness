@@ -1,10 +1,52 @@
 """Static checks for generated files; never executes generated code."""
 import ast
 import json
+import math
 import sys
 from pathlib import Path
 import yaml
 from harness.core.io import safe_path
+
+
+def validate_metric_constraints(constraints) -> dict:
+    """Validate numeric min/max rules used to gate executed experiment metrics."""
+    if constraints is None:
+        return {}
+    if not isinstance(constraints, dict):
+        raise ValueError("metric_constraints must be a mapping")
+    normalized = {}
+    for key, rule in constraints.items():
+        if not isinstance(key, str) or not key.strip() or not isinstance(rule, dict) or not rule:
+            raise ValueError("metric_constraints needs non-empty metric names and rule mappings")
+        unknown = set(rule) - {"min", "max"}
+        if unknown:
+            raise ValueError(f"Unknown metric constraint for {key}: {', '.join(sorted(unknown))}")
+        clean = {}
+        for bound in ("min", "max"):
+            if bound not in rule:
+                continue
+            value = rule[bound]
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(value)):
+                raise ValueError(f"Metric constraint {key}.{bound} must be finite numeric")
+            clean[bound] = value
+        if not clean or ("min" in clean and "max" in clean and clean["min"] > clean["max"]):
+            raise ValueError(f"Invalid metric constraint bounds for {key}")
+        normalized[key] = clean
+    return normalized
+
+
+def metric_constraint_errors(metrics: dict, constraints: dict) -> list[str]:
+    errors = []
+    for key, rule in constraints.items():
+        if key not in metrics:
+            continue
+        value = metrics[key]
+        if "min" in rule and value < rule["min"]:
+            errors.append(f"{key}={value} is below minimum {rule['min']}")
+        if "max" in rule and value > rule["max"]:
+            errors.append(f"{key}={value} is above maximum {rule['max']}")
+    return errors
 
 
 def validate_file(path: str, content: str) -> None:

@@ -1,0 +1,71 @@
+# Reproducible end-to-end profile for the robust rolling forecast experiment.
+# Paths are relative to project_root.
+project_root: ".."
+skills_file: "configs/skills.yaml"
+
+llm:
+  protocol: "openai_compatible"
+  api_key: ""
+  api_key_env: "AGNES_API_KEY"
+  base_url: "https://apihub.agnes-ai.com/v1"
+  default_model: "agnes-3.0-flash"
+  timeout: 180
+
+paths:
+  sessions_dir: "sessions"
+  memory_dir: "memory"
+  workflows_dir: "workflows"
+
+workflow:
+  default: "workflows/research.yaml"
+  resume: true
+
+agents:
+  planner:
+    use_extended_thinking: false
+  method:
+    use_extended_thinking: false
+  reviewer:
+    use_extended_thinking: false
+  literature:
+    use_extended_thinking: false
+  coder:
+    use_extended_thinking: false
+    max_tokens: 12000
+    request_timeout: 300
+    allowed_dependencies: []
+    required_metric_keys: &forecast_metrics
+      - baseline_mae
+      - proposed_mae
+      - baseline_clean_mae
+      - proposed_clean_mae
+      - baseline_contaminated_mae
+      - proposed_contaminated_mae
+      - relative_improvement
+      - sample_count
+      - clean_count
+      - contaminated_count
+    metric_constraints: &forecast_constraints
+      sample_count:
+        min: 600
+      clean_count:
+        min: 1
+      contaminated_count:
+        min: 1
+  writer:
+    use_extended_thinking: false
+  executor:
+    timeout: 180
+    python_executable: "python"
+    install_dependencies: false
+    run_entry_point: true
+    entry_args: []
+    enable_code_review: false
+    require_metrics: true
+    allowed_dependencies: []
+    required_metric_keys: *forecast_metrics
+    metric_constraints: *forecast_constraints
+
+logging:
+  level: "INFO"
+  file: "harness.log"
