@@ -1,5 +1,17 @@
 # research-harness
 
+## 一键部署
+
+在仓库根目录执行一条命令，即可创建或复用 Python 虚拟环境、安装依赖、创建 `.env`、克隆或快进更新私有 OpenCode fork、安装 Bun 依赖、运行集成检查并启动研究 CLI：
+
+```powershell
+python deploy.py --start
+```
+
+需要预先安装 Python 3.10+、Git 和 Bun，并确保 Git 有权读取私有仓库 `GOOFY-04/opencode`。脚本不会覆盖已有 `.env`，也不会更新存在未提交修改的 `opencode-fork`。首次部署后，在 `.env` 中填写 `AGNES_API_KEY` 才能发起模型请求。
+
+只部署和验证而不启动 CLI，执行 `python deploy.py`。网络受限且本地依赖已准备好时，可使用 `--no-update`；仅在明确需要快速重装时使用 `--skip-checks`。重复执行部署命令是安全的，OpenCode 更新采用 `--ff-only`，不会自动合并分叉历史。
+
 面向长流程科研的可恢复流水线：研究规划、文献检索、方法设计、代码生成与验证、审稿、论文草稿和项目文档。
 
 默认运行的是**代码快速验证**，不是完整训练或科研结论验证。论文以实际执行日志为依据，未完成的实验应明确标为 TODO；最终研究结论仍需真实数据、基线比较和人工审查。
