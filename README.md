@@ -63,7 +63,7 @@ python main.py run --direction "新的研究方向" --session my_research --no-r
 
 ## OpenCode 接入
 
-项目已经接入 [OpenCode fork](https://github.com/GOOFY-04/opencode/tree/research-harness)，对应实现和验证记录见 [Draft PR #1](https://github.com/GOOFY-04/opencode/pull/1)。本地开发布局为：
+项目已经接入 [OpenCode fork](https://github.com/GOOFY-04/opencode/tree/research-harness)，实现持续同步到该分支。本地开发布局为：
 
 ```text
 research-harness/
@@ -81,15 +81,15 @@ bun run dev:harness
 
 必须通过该脚本启动，使 Bun 读取 `packages/opencode/tsconfig.json` 中的 Solid JSX 配置；不要从仓库根直接运行 `bun run packages/opencode/src/index.ts .`，否则 TUI 会被错误地按 React JSX 编译。
 
-- `/research <研究方向>`：启动研究流程；
-- `/research-resume <session>`：从 checkpoint 恢复；
-- `/research-status <session>`：只读检查状态。
+- `/research`：打开配置与研究问题对话框并启动流程；
+- `/research-board`：打开当前研究工作区；
+- 工作区内按 `U` 从 checkpoint 恢复，按 `S` 选择并只读检查其他会话。
 
-现在通过 `/research-board` 打开原生终端研究工作台。宽屏按“研究会话 / 实验流水线 / 证据账本”三栏组织，紧凑窗口隐藏会话栏，窄窗口改为纵向滚动。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置都在主视图中直接显示；执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、L 日志、U 恢复、X 重置、Esc 返回聊天。
+研究工作区采用 Chat / Plan / Execution / Evidence 四个持续可见的入口，一次聚焦一个视图。Plan 展示实验流水线，Execution 展示当前阶段和 worker 输出，Evidence 展示证据账本；左右方向键切换视图。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置均可直接检查，执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、U 恢复、X 重置、Esc 返回发起工作区的具体对话。
 
 OpenCode CLI 首页也使用 Research Harness 作为主信息架构：从“问题 → 流水线 → 证据 → 审查”开始，展示 checkpoint 可恢复、证据门控和结论边界三项研究契约，并读取真实 checkpoint 汇总当前需要关注的实验。首页输入框优先引导用户声明可证伪问题及所需证据，而不是直接要求生成结论。
 
-进入实际对话后，研究状态条会固定显示在输入框上方并自动刷新。宽窗口展示完整阶段链、当前阶段、尝试次数和 worker 状态，窄窗口保留总体进度与当前阶段；点击状态条可直接进入 `/research-board`。正在运行的任务优先显示，没有运行任务时沿用工作台当前选择。
+进入实际对话后，顶部研究栏会持续显示 Chat / Plan / Execution / Evidence、总体进度、当前阶段和 worker 状态，原生聊天输入框保持可用。宽窗口额外展示完整阶段链，窄窗口保留关键状态；点击状态可直接进入 Execution，返回时回到原对话。正在运行的任务优先显示，没有运行任务时沿用工作台当前选择。
 
 接入架构由 `harness/research_service.py` 和 `opencode-fork/packages/research/` 组成。研究服务调用既有 CLI 和 WorkflowEngine，OpenCode 负责交互；checkpoint 是阶段状态的唯一来源。`run/resume/repair/reset-stage` 立即返回后台任务的接收结果，**不表示研究已完成**。关闭聊天或看板后，已接收的研究任务继续运行。当前版本没有停止后台任务的 UI 命令。
 
@@ -105,7 +105,7 @@ bun run research logs my_research
 bun run research resume my_research
 ```
 
-看板分别显示流程状态、worker 状态和实验证据；流程完成不会被解释为科研结论成立。详细架构、边界和测试见 [Research workbench 架构说明](opencode-fork/packages/research/README.md)。上述改动位于本地 fork，历史 PR 链接不代表这些新改动已发布。
+看板分别显示流程状态、worker 状态和实验证据；流程完成不会被解释为科研结论成立。详细架构、边界和测试见 [Research workbench 架构说明](opencode-fork/packages/research/README.md)。相关实现已同步到 OpenCode 私有仓库的 `research-harness` 分支。
 
 ## 工作流
 
