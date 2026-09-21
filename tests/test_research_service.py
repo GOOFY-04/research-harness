@@ -49,6 +49,28 @@ def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     assert view["evidence"]["scientific_validity"] == "not_established"
 
 
+def test_stage_output_exposes_persisted_result_without_mutating_checkpoint(service):
+    cp = checkpoint(service)
+    state = cp.load()
+    state["stages"]["code_execution"]["output"] = {
+        "success": False,
+        "analysis": {"metrics": {"loss": 0.25}},
+        "error": "measured failure",
+    }
+    cp.save(state)
+    before = cp.checkpoint_file.read_bytes()
+
+    result = service.handle({"action": "stage-output", "session": "study", "stage": "code_execution"})
+
+    assert result["has_output"] is True
+    assert result["status"] == "failed"
+    assert '"loss": 0.25' in result["text"]
+    assert "measured failure" in result["text"]
+    assert cp.checkpoint_file.read_bytes() == before
+    with pytest.raises(ValueError, match="Unknown stage"):
+        service.handle({"action": "stage-output", "session": "study", "stage": "unknown"})
+
+
 def test_stale_running_checkpoint_is_interrupted_without_mutating_checkpoint(service):
     cp = checkpoint(service, "running")
     assert service.handle({"action": "status", "session": "study"})["status"] == "interrupted"

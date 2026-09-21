@@ -85,7 +85,7 @@ bun run dev:harness
 - `/research-board`：打开当前研究工作区；
 - 工作区内按 `U` 从 checkpoint 恢复，按 `S` 选择并只读检查其他会话。
 
-研究工作区采用 Chat / Plan / Execution / Evidence 四个持续可见的入口，一次聚焦一个视图。Plan 展示实验流水线，Execution 展示当前阶段和 worker 输出，Evidence 展示证据账本；左右方向键切换视图。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置均可直接检查，执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、U 恢复、X 重置、Esc 返回发起工作区的具体对话。
+研究工作区采用 Chat / Plan / Execution / Evidence 四个持续可见的入口，一次聚焦一个视图。Plan 展示实验流水线，Execution 展示当前阶段和 worker 日志，Evidence 展示 checkpoint 中实际保存的阶段 JSON 输出与证据账本；左右方向键切换视图，按 O 可选择任意阶段输出。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置均可直接检查，执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、O 输出、U 恢复、X 重置、Esc 返回发起工作区的具体对话。
 
 OpenCode CLI 首页也使用 Research Harness 作为主信息架构：从“问题 → 流水线 → 证据 → 审查”开始，展示 checkpoint 可恢复、证据门控和结论边界三项研究契约，并读取真实 checkpoint 汇总当前需要关注的实验。首页输入框优先引导用户声明可证伪问题及所需证据，而不是直接要求生成结论。
 

@@ -106,7 +106,7 @@ class ResearchService:
     def handle(self, request):
         action = request.get("action")
         session = request.get("session")
-        if action not in MUTATIONS | {"status", "list", "logs", "reset-preview"}:
+        if action not in MUTATIONS | {"status", "list", "logs", "stage-output", "reset-preview"}:
             raise ValueError("Unknown research action")
         if action == "list":
             _, config = self.config(request)
@@ -138,6 +138,28 @@ class ResearchService:
                 stream.seek(max(0, path.stat().st_size - 16000))
                 text = stream.read(16000).decode("utf-8", errors="replace")
             return {"session": session, "text": re.sub(r"sk-[A-Za-z0-9_-]+", "[REDACTED]", text)}
+        if action == "stage-output":
+            _, config = self.config(request, self.read_job(session))
+            cp = CheckpointManager(config["paths"]["sessions_dir"], session)
+            if not cp.checkpoint_file.exists():
+                raise ValueError(f"Session does not exist: {session}")
+            stage = request.get("stage")
+            if not isinstance(stage, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", stage):
+                raise ValueError("stage is required for stage-output")
+            state = cp.load()
+            if stage not in state.get("stages", {}):
+                raise ValueError(f"Unknown stage: {stage}")
+            info = state["stages"][stage]
+            output = info.get("output")
+            if output is None:
+                text = "No persisted output yet. Running stages write output after the stage completes or fails."
+            else:
+                text = json.dumps(output, ensure_ascii=False, indent=2, default=str)
+                text = re.sub(r"sk-[A-Za-z0-9_-]+", "[REDACTED]", text)
+                if len(text) > 32000:
+                    text = text[:32000] + "\n... [output truncated]"
+            return {"session": session, "stage": stage, "status": info.get("status", "pending"),
+                    "error": info.get("error"), "text": text, "has_output": output is not None}
         job = self.read_job(session)
         name, config = self.config(request, job)
         if job and action != "run" and request.get("config") and name != job["config"]:
