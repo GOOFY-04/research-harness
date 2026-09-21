@@ -5,7 +5,7 @@ stages:
   - id: planning
     name: 选题与研究规划
     agent: planner
-    max_retries: 4
+    max_retries: 2
     inputs:
       research_direction: ""   # 由 CLI 注入，见 main.py
     # 无依赖，第一个阶段

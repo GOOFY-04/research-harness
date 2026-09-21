@@ -24,6 +24,7 @@ REVIEWER_SYSTEM = """你是一位顶级 AI 会议（NeurIPS/ICML/ICLR）的资�
 class ReviewerAgent(BaseAgent):
     required_fields = {"weaknesses": list, "revision_plan": list, "recommendation": str}
     model = "claude-opus-4-6"
+    max_tokens = 4096
     use_extended_thinking = True
     thinking_budget = 8000
 

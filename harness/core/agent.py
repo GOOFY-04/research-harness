@@ -8,6 +8,7 @@ BaseAgent 负责调用 Claude API、重试、记忆读写、日志。
 import logging
 import os
 from abc import ABC, abstractmethod
+from time import monotonic
 from typing import Any, Optional
 
 from .memory import MemoryStore
@@ -203,7 +204,18 @@ class BaseAgent(ABC):
         else:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": self.thinking_budget}
             kwargs["temperature"] = 1.0
-        return self._llm.create(**kwargs)
+        started = monotonic()
+        logger.info("[%s] model request started: model=%s max_tokens=%s",
+                    self.__class__.__name__, self.model, self.max_tokens)
+        try:
+            result = self._llm.create(**kwargs)
+        except Exception as exc:
+            logger.error("[%s] model request failed after %.1fs: %s",
+                         self.__class__.__name__, monotonic() - started, exc)
+            raise
+        logger.info("[%s] model response received after %.1fs (%s chars)",
+                    self.__class__.__name__, monotonic() - started, len(result))
+        return result
 
     # ------------------------------------------------------------------
     # 工具方法（子类可用）

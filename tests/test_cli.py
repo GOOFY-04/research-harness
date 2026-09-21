@@ -44,6 +44,10 @@ def test_config_independent_of_working_directory(tmp_path, monkeypatch):
     assert agents["method"].model == "agnes-3.0-flash"
     assert agents["method"]._llm.protocol == "openai_compatible"
     assert agents["method"].use_extended_thinking is False
+    assert agents["planner"].max_tokens == 3072
+    assert agents["literature"].max_tokens == 8192
+    assert agents["method"].max_tokens == 6144
+    assert agents["reviewer"].max_tokens == 4096
 
 
 def test_full_experiment_requires_machine_readable_metrics():

@@ -69,9 +69,11 @@ class ResearchService:
         stages = []
         for stage in engine.spec.stages:
             info = state["stages"].get(stage.id, {})
+            errors = info.get("errors") if isinstance(info.get("errors"), list) else []
             stages.append({"id": stage.id, "name": stage.name, "status": info.get("status", "pending"),
                            "depends_on": stage.depends_on, "attempts": info.get("attempts", 0),
-                           "error": info.get("error"), "repair_from": stage.repair_from})
+                           "error": info.get("error"), "last_error": errors[-1] if errors else None,
+                           "started_at": info.get("started_at"), "repair_from": stage.repair_from})
         execution = state["stages"].get("code_execution", {})
         output = execution.get("output") or {}
         review = (state["stages"].get("self_review", {}).get("output") or {}).get("recommendation")

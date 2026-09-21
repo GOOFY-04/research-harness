@@ -111,6 +111,19 @@ def test_resume_exhausted_and_interrupted_stages(tmp_path):
     assert agent.calls == 3
 
 
+def test_model_timeouts_stop_after_one_retry(tmp_path):
+    agent = Fake(TimeoutError("The read operation timed out"))
+    agent._llm = type("LLM", (), {"deadline": None})()
+    engine, cp = make_engine(tmp_path, [{"id": "planning", "agent": "planner", "max_retries": 4}], {"planner": agent})
+
+    state = engine.run()
+
+    assert state["status"] == "failed"
+    assert agent.calls == 2
+    assert state["stages"]["planning"]["attempts"] == 2
+    assert "stopped early" in state["stages"]["planning"]["error"]
+
+
 def test_missing_nested_field_is_explicit_failure(tmp_path):
     a, b = Fake({"analysis":{}}), Fake()
     engine, cp = make_engine(tmp_path, [

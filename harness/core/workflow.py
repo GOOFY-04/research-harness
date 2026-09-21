@@ -194,6 +194,7 @@ class WorkflowEngine:
 
         # 构建输入：静态 inputs → 前序阶段输出 → CLI 注入的 override（优先级递增）
         # Retry allowance is per invocation; an interrupted/exhausted stage can resume.
+        provider_timeouts = 0
         for attempt in range(stage.max_retries + 1):
             state = self.checkpoint.mark_stage_started(state, stage.id)
             logger.info(f"[{stage.id}] 开始执行 (第 {attempt + 1} 次)")
@@ -237,6 +238,21 @@ class WorkflowEngine:
                 error_msg = str(e)
                 logger.error(f"[{stage.id}] 第 {attempt + 1} 次失败: {error_msg}")
                 state = self.checkpoint.mark_stage_failed(state, stage.id, error_msg, getattr(e, "output", output))
+                # Long model read timeouts used to consume every semantic retry
+                # slot (15 minutes for planning). One retry is enough to rule out
+                # a transient provider stall; validation failures still retain the
+                # workflow's full retry allowance.
+                provider_timeout = (isinstance(e, TimeoutError) and hasattr(agent, "_llm")
+                                    and stage.agent != "executor")
+                if provider_timeout:
+                    provider_timeouts += 1
+                    if provider_timeouts >= 2:
+                        message = f"Provider timed out twice; stopped early: {error_msg}"
+                        state["stages"][stage.id]["error"] = message
+                        state["stages"][stage.id].setdefault("errors", []).append(message)
+                        self.checkpoint.save(state)
+                        logger.error("[%s] %s", stage.id, message)
+                        return state
                 if attempt < stage.max_retries and stage.repair_from and isinstance(output, dict):
                     try:
                         state = self._repair_upstream(state, stage, output)

@@ -59,7 +59,7 @@ class LiteratureAgent(BaseAgent):
     required_fields = {"papers": list, "sources": list, "research_gaps": list,
                        "related_work_draft": str, "key_baselines": list}
     model = "claude-sonnet-4-6"
-    max_tokens = 16000
+    max_tokens = 8192
 
     @staticmethod
     def _source_cache(state):

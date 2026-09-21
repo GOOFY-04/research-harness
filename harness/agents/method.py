@@ -20,6 +20,7 @@ class MethodAgent(BaseAgent):
     required_fields = {"method_name": str, "overview": str, "components": list,
                        "algorithm": str, "method_section_draft": str}
     model = "claude-opus-4-6"
+    max_tokens = 6144
     use_extended_thinking = True
     thinking_budget = 10000
 

@@ -23,6 +23,7 @@ SYSTEM_PROMPT = """你是一位资深 AI 科研导师，擅长将模糊的研究
 class PlannerAgent(BaseAgent):
     required_fields = {"research_question": str, "keywords": list, "novelty_hypothesis": str}
     model = "claude-opus-4-6"
+    max_tokens = 3072
     use_extended_thinking = True
     thinking_budget = 8000
 

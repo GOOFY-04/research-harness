@@ -301,6 +301,32 @@ def test_coder_repairs_files_from_executor_feedback(tmp_path, monkeypatch):
     assert "assert value() == 3" in prompts[0]
 
 
+def test_coder_regenerates_smoke_test_when_it_guessed_the_wrong_contract(tmp_path, monkeypatch):
+    agent = CoderAgent()
+    previous = {
+        "files": [{"path": "model.py", "content": "def interval():\n    return (0.0, 1.0)\n"}],
+        "entry_point": "model.py",
+        "dependencies": "",
+        "run_instructions": "python model.py",
+        "test_snippet": "from model import interval\nassert isinstance(interval(), float)",
+    }
+    replies = iter([
+        json.dumps({"diagnosis": "test guessed a scalar return", "files": [],
+                    "dependencies": None, "regenerate_test": True}),
+        "from model import interval\nvalue = interval()\nassert len(value) == 2",
+    ])
+    monkeypatch.setattr(agent, "_call_llm", lambda _prompt: next(replies))
+    failure = {"success": False, "error": "smoke test failed", "execution_kind": "smoke_test",
+               "runs": [{"returncode": 1, "stdout": "expected float", "stderr": ""}]}
+
+    repaired = agent.repair("coding", previous, failure, {"session_dir": str(tmp_path)})
+
+    assert repaired["files"] == previous["files"]
+    assert "len(value) == 2" in repaired["test_snippet"]
+    assert repaired["repair_history"][0]["test_regenerated"] is True
+    assert repaired["repair_history"][0]["changed_files"] == []
+
+
 def test_session_file_lock(tmp_path):
     with file_lock(tmp_path / "session.lock"):
         with pytest.raises(RuntimeError):

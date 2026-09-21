@@ -93,6 +93,8 @@ OpenCode CLI 首页也使用 Research Harness 作为主信息架构：从“问�
 
 接入架构由 `harness/research_service.py` 和 `opencode-fork/packages/research/` 组成。研究服务调用既有 CLI 和 WorkflowEngine，OpenCode 负责交互；checkpoint 是阶段状态的唯一来源。`run/resume/repair/reset-stage` 立即返回后台任务的接收结果，**不表示研究已完成**。关闭聊天或看板后，已接收的研究任务继续运行。当前版本没有停止后台任务的 UI 命令。
 
+模型阶段使用与输出结构匹配的 token 预算；连续两次供应商读取超时会提前失败，不再耗尽全部语义重试并长时间假运行。Execution 日志会记录每次模型请求的开始、耗时、响应长度，以及 Coder 的 manifest、逐文件生成和 smoke test 子步骤。自动 smoke test 根据实际源代码契约生成；如果测试错误猜测了返回类型，修复器会重建测试，而不是持续扭曲实现去迎合错误断言。
+
 新建研究可选择快速验证、完整实验或 SfM 严格配置；该配置随后台任务保存，恢复时沿用。旧 CLI 会话没有配置记录，首次通过服务恢复时应显式指定原配置。harness 继续使用本目录的 `.env`，无需向 fork 复制 API 凭据。
 
 无需模型调用即可独立检查：

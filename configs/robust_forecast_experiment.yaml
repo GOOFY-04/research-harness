@@ -9,7 +9,7 @@ llm:
   api_key_env: "AGNES_API_KEY"
   base_url: "https://apihub.agnes-ai.com/v1"
   default_model: "agnes-3.0-flash"
-  timeout: 180
+  timeout: 120
 
 paths:
   sessions_dir: "sessions"

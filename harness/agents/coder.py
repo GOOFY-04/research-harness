@@ -120,6 +120,33 @@ class CoderAgent(BaseAgent):
                     raise
                 logger.warning("Coder repair sub-request failed; retrying once: %s", exc)
 
+    def _generate_smoke_test(self, files, context, dependency_instruction, repair=False):
+        """Generate a smoke test from real source contracts, not guessed signatures."""
+        prompt = f"""Write a short Python smoke test for this exact implementation.
+Use CPU and tiny synthetic inputs. Assert only behavior supported by the supplied source,
+including its real return types. Do not invent a different interface contract, fixed metric
+values, downloads, training workloads, or publication claims. Prefer construction, shape,
+finite-value, and one-step integration checks. Return only Python code.
+{dependency_instruction}
+Public interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
+Implementation source: {json.dumps(source_context(files, total_limit=45000), ensure_ascii=False)}
+Research context: {context}"""
+        call = self._call_repair if repair else self._call_llm
+        for attempt in range(3):
+            test = strip_outer_fence(call(prompt), ("python",))
+            try:
+                compile(test, "<generated_test>", "exec")
+                validate_imports(
+                    files + [{"path": "__harness_smoke_test__.py", "content": test}],
+                    self.allowed_dependencies,
+                )
+                return test
+            except (ValueError, SyntaxError) as exc:
+                if attempt == 2:
+                    raise
+                prompt += f"\nPrevious smoke test was invalid: {exc}. Regenerate it completely."
+        raise ValueError("Smoke test generation failed")
+
     def run(self, stage_id, inputs, state):
         research_context = dict(inputs)
         direction = state.get("metadata", {}).get("research_direction")
@@ -127,6 +154,7 @@ class CoderAgent(BaseAgent):
             research_context["original_research_direction"] = direction
         context = json.dumps(research_context, ensure_ascii=False, indent=2)
         dependency_instruction = self._dependency_instruction()
+        logger.info("[CoderAgent] generating implementation manifest")
         manifest = self._parse_json(self._call_llm(f"""You are implementing a research prototype.
 Design 6-10 files with consistent public interfaces. Return a JSON object:
 {{"files":[{{"path":"relative/path.py","description":"purpose","interface":"exact public class/function signatures"}}],
@@ -158,8 +186,10 @@ Research design:
             safe_path(state.get("session_dir", "."), info["path"])
         files = []
         manifest_paths = [item["path"] for item in manifest["files"]]
-        for info in manifest["files"]:
+        logger.info("[CoderAgent] manifest accepted: %s files", len(manifest_paths))
+        for file_index, info in enumerate(manifest["files"], start=1):
             path = info["path"]
+            logger.info("[CoderAgent] generating file %s/%s: %s", file_index, len(manifest_paths), path)
             extension = Path(path).suffix.lower()
             language = {".py":"python", ".yaml":"yaml", ".yml":"yaml", ".json":"json",
                         ".md":"markdown", ".txt":"text", ".toml":"toml"}.get(extension, "text")
@@ -196,29 +226,13 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
             files.append({**info, "content": content})
         validate_files(files, state.get("session_dir", "."))
         validate_imports(files, self.allowed_dependencies)
-        test_prompt = f"""Write a short Python smoke test for these exact interfaces.
-Use CPU and tiny synthetic inputs. Assert output shapes and finite values.
-Do not download datasets or weights, train a full model, or report synthetic scores as research results.
-{dependency_instruction}
-Return only Python code.\n{json.dumps(interfaces(files), ensure_ascii=False)}
-Research context: {context}"""
-        for attempt in range(3):
-            test = strip_outer_fence(self._call_llm(test_prompt), ("python",))
-            try:
-                compile(test, "<generated_test>", "exec")
-                validate_imports(
-                    files + [{"path": "__harness_smoke_test__.py", "content": test}],
-                    self.allowed_dependencies,
-                )
-                break
-            except (ValueError, SyntaxError) as exc:
-                if attempt == 2:
-                    raise
-                test_prompt += f"\nPrevious smoke test was invalid: {exc}. Regenerate it completely."
+        logger.info("[CoderAgent] generating smoke test from implementation source")
+        test = self._generate_smoke_test(files, context, dependency_instruction)
         output = {"files": files, "entry_point": manifest.get("entry_point", ""),
                   "dependencies": manifest.get("dependencies", ""),
                   "run_instructions": manifest.get("run_instructions", ""), "test_snippet": test}
         self.validate_output(output)
+        logger.info("[CoderAgent] implementation bundle validated")
         if self.memory:
             self.memory.append(stage_id, {"files": [f["path"] for f in files]}, ["CoderAgent"])
         return output
@@ -245,15 +259,19 @@ Research context: {context}"""
 Diagnose the runtime or installation failure and propose the smallest repair.
 Return JSON only:
 {{"diagnosis":"concrete root cause","files":["existing/path.py"],
-  "dependencies":null}}
+  "dependencies":null,"regenerate_test":false}}
 "files" must contain only existing generated paths and at most six entries.
 Use dependencies only when the requirements text itself must change; otherwise return null.
+When the smoke test assumed behavior that the supplied source never promised, set
+regenerate_test=true and do not distort correct source code to satisfy that bad assumption.
+Set regenerate_test=false when the test exposed a real implementation defect.
 If execution_policy.install_dependencies is false, dependencies must be null and the source must avoid incompatible optional packages.
 execution_policy.timeout_seconds is the total budget for the smoke test and entry point together, including all baselines and evaluation.
 When execution timed out, reduce bounded workload or split the total budget; do not merely add tolerance to an internal timer.
-Do not weaken or delete tests, remove the baseline, suppress errors, hard-code metrics, or skip the experiment.
+Do not weaken coverage, remove the baseline, suppress errors, hard-code metrics, or skip the experiment.
 {dependency_instruction}
-The supplied test snippet is an immutable interface contract. Repair source files to satisfy it.
+The supplied test snippet may contain an unsupported interface assumption. Compare it with
+the actual source before deciding whether source or test must change.
 Execution failure:
 {json.dumps(failure, ensure_ascii=False, indent=2)}
 Execution contract:
@@ -268,6 +286,7 @@ Current source:
             try:
                 selected = plan.get("files") if isinstance(plan, dict) else None
                 dependency_change = plan.get("dependencies") if isinstance(plan, dict) else None
+                regenerate_test = plan.get("regenerate_test", False) if isinstance(plan, dict) else False
                 if (not isinstance(selected, list) or len(selected) > 6
                         or not all(isinstance(path, str) and path in by_path for path in selected)
                         or len(set(selected)) != len(selected)):
@@ -280,12 +299,14 @@ Current source:
                     dependency_change = "\n".join(item.strip() for item in dependency_change if item.strip()) or None
                 if dependency_change is not None and not isinstance(dependency_change, str):
                     raise ValueError("dependencies must be text, a string list, or null")
+                if not isinstance(regenerate_test, bool):
+                    raise ValueError("regenerate_test must be true or false")
                 install_enabled = failure.get("execution_policy", {}).get("install_dependencies")
                 if install_enabled is False and dependency_change is not None:
                     raise ValueError("dependency installation is disabled; repair source files instead")
                 if dependency_change is not None:
                     validate_dependencies(dependency_change, self.allowed_dependencies)
-                if not selected and dependency_change is None:
+                if not selected and dependency_change is None and not regenerate_test:
                     raise ValueError("repair plan made no changes")
                 break
             except (KeyError, TypeError, ValueError) as exc:
@@ -314,7 +335,7 @@ Do not hard-code expected outputs or metrics, disable assertions, catch-and-igno
 {dependency_instruction}
 Diagnosis: {plan.get('diagnosis', '')}
 Execution failure: {json.dumps(failure, ensure_ascii=False)}
-Immutable execution contract: {json.dumps(contract, ensure_ascii=False)}
+Current execution contract: {json.dumps(contract, ensure_ascii=False)}
 Project interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
 Project source: {json.dumps(source_context(files), ensure_ascii=False)}
 Current complete file: {info['content']}"""
@@ -335,7 +356,14 @@ Current complete file: {info['content']}"""
         repaired["files"] = files
         if dependency_change is not None:
             repaired["dependencies"] = dependency_change
-        if not changed and repaired["dependencies"] == previous_output["dependencies"]:
+        if regenerate_test:
+            logger.info("[CoderAgent] regenerating smoke test from repaired source")
+            repair_context = json.dumps({"execution_failure": failure, "diagnosis": plan.get("diagnosis", "")}, ensure_ascii=False)
+            repaired["test_snippet"] = self._generate_smoke_test(
+                files, repair_context, self._dependency_instruction(), repair=True,
+            )
+        if (not changed and repaired["dependencies"] == previous_output["dependencies"]
+                and not regenerate_test):
             raise ValueError("Automatic repair produced no effective change")
         history = list(previous_output.get("repair_history", []))
         history.append({
@@ -349,6 +377,7 @@ Current complete file: {info['content']}"""
                 for path in selected
             },
             "dependencies_changed": repaired["dependencies"] != previous_output["dependencies"],
+            "test_regenerated": regenerate_test,
             "failure": failure,
         })
         repaired["repair_history"] = history
