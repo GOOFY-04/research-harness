@@ -47,6 +47,7 @@ python main.py run --direction "基于 Transformer 的时间序列预测方法"
 python main.py run --direction "研究方向" --session my_research
 python main.py resume --session my_research
 python main.py status --session my_research
+python main.py accept --session my_research --write-report
 python main.py list
 python main.py reset-stage --session my_research coding
 python main.py repair --session my_research
@@ -59,6 +60,8 @@ python main.py run --direction "新的研究方向" --session my_research --no-r
 - 相同 session 改研究方向时，必须使用新 session 或 `--no-resume`。
 - 流程失败或被阻塞时退出码为 1；中断为 130；成功为 0。
 - 同一 session 的 CLI 写操作使用进程锁，避免并发覆盖。
+- `accept` 离线复核工作流、真实入口执行、指标策略、论文指标追溯、审稿意见和导出产物；`--write-report` 生成带 SHA-256 产物清单的 `acceptance.json`。验收失败时退出码为 1，并逐项说明原因。
+- 每次流程结束都会刷新 `acceptance.json`；Evidence 页面显示验收结论和失败检查数。checkpoint 后续发生变化时，旧报告显示为 `stale`，不能继续作为当前证据。
 - CLI 的 `repair` 只重新解析保存的原始 JSON，不调用模型；代码执行失败时的自动修复由工作流中的 `repair_from: coding` 单独控制。
 
 ## OpenCode 接入
@@ -223,6 +226,14 @@ print(result)
 python -m pytest -q
 python -m pip check
 ```
+
+恢复与证据门的离线对照实验可独立复现：
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.harness_ablation --output experiments/results/harness_ablation.json
+```
+
+开源项目的能力重叠、当前可辩护的差异点和声明边界见 [原创性对照](docs/ORIGINALITY.md)。
 
 测试使用临时 session、模拟模型响应和真实的小型 Python 子进程，不调用付费 API、不下载训练数据。覆盖默认八阶段集成、CLI 恢复/失效传播、失败输出、路径限制、代码与文档校验、引用、配置和进程超时。
 

@@ -17,10 +17,19 @@ from uuid import uuid4
 from harness.core.checkpoint import CheckpointManager
 from harness.core.io import atomic_json, file_lock, safe_path
 from harness.core.workflow import WorkflowEngine
+from harness.acceptance import sha256_file
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = 1
 MUTATIONS = {"run", "resume", "repair", "reset-stage"}
+
+
+def parse_request(raw: bytes):
+    """Decode JSON from shells that may prefix UTF-8 input with a BOM."""
+    request = json.loads(raw.decode("utf-8-sig"))
+    if not isinstance(request, dict):
+        raise ValueError("Request must be a JSON object")
+    return request
 
 
 class ResearchService:
@@ -95,6 +104,23 @@ class ResearchService:
                     status = "interrupted"
             except RuntimeError:
                 pass
+        acceptance = {"decision": "not_evaluated", "failed_required_checks": [],
+                      "report": None, "stale": False}
+        acceptance_path = safe_path(cp.session_dir, "acceptance.json")
+        if acceptance_path.is_file():
+            try:
+                saved = json.loads(acceptance_path.read_text(encoding="utf-8"))
+                stale = (saved.get("checkpoint_updated_at") != state.get("_updated_at")
+                         or saved.get("checkpoint_sha256") != sha256_file(cp.checkpoint_file))
+                acceptance = {
+                    "decision": "stale" if stale else saved.get("decision", "not_evaluated"),
+                    "failed_required_checks": saved.get("failed_required_checks", []) if not stale else [],
+                    "report": str(acceptance_path),
+                    "stale": stale,
+                }
+            except (OSError, ValueError, TypeError):
+                acceptance = {"decision": "invalid", "failed_required_checks": [],
+                              "report": str(acceptance_path), "stale": False}
         return {"session": session, "direction": state.get("metadata", {}).get("research_direction", ""),
                 "status": status, "current_stage": state.get("current_stage"), "stages": stages,
                 "job": job, "metrics": metrics, "artifacts": artifacts, "review": review,
@@ -102,6 +128,7 @@ class ResearchService:
                              "execution_passed": execution.get("status") == "done" and output.get("success") is True,
                              "missing_metrics": sorted(set(required) - set(metrics)),
                              "scientific_validity": "not_established"},
+                "acceptance": acceptance,
                 "repairs": len((state["stages"].get("coding", {}).get("output") or {}).get("repair_history", [])),
                 "checkpoint": str(cp.checkpoint_file)}
 
@@ -253,9 +280,7 @@ def cli():
         return 0
     sys.stdout.reconfigure(encoding="utf-8")
     try:
-        request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        if not isinstance(request, dict):
-            raise ValueError("Request must be a JSON object")
+        request = parse_request(sys.stdin.buffer.read())
         response = {"version": VERSION, "ok": True, "data": ResearchService().handle(request)}
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         response = {"version": VERSION, "ok": False, "error": str(exc)}

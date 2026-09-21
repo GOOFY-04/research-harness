@@ -67,7 +67,18 @@ def atomic_json(path: Path, data: dict) -> None:
             json.dump(data, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        # Windows virus scanners and indexers can briefly open the destination
+        # without delete sharing, causing os.replace to raise WinError 5. Keep
+        # the atomic replace semantics and retry only that narrow error class.
+        delays = (0.02, 0.05, 0.1, 0.2)
+        for attempt in range(len(delays) + 1):
+            try:
+                os.replace(name, path)
+                break
+            except PermissionError:
+                if attempt == len(delays):
+                    raise
+                sleep(delays[attempt])
     finally:
         Path(name).unlink(missing_ok=True)
 

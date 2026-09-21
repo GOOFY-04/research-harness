@@ -8,7 +8,8 @@ import yaml
 
 from harness.core.checkpoint import CheckpointManager
 from harness.core.io import atomic_json, file_lock
-from harness.research_service import ResearchService, ROOT
+from harness.research_service import ResearchService, ROOT, parse_request
+from harness.acceptance import sha256_file
 
 
 @pytest.fixture
@@ -40,6 +41,10 @@ def checkpoint(service, status="failed"):
     return cp
 
 
+def test_service_request_accepts_utf8_bom_from_powershell():
+    assert parse_request(b'\xef\xbb\xbf{"action":"list"}') == {"action": "list"}
+
+
 def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     checkpoint(service)
     view = service.handle({"action": "status", "session": "study"})
@@ -47,6 +52,25 @@ def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     assert view["evidence"]["missing_metrics"] == ["loss"]
     assert not view["evidence"]["execution_passed"]
     assert view["evidence"]["scientific_validity"] == "not_established"
+    assert view["acceptance"]["decision"] == "not_evaluated"
+
+
+def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(service):
+    cp = checkpoint(service)
+    state = cp.load()
+    report = {"decision": "rejected", "failed_required_checks": ["execution:succeeded"],
+              "checkpoint_updated_at": state["_updated_at"],
+              "checkpoint_sha256": sha256_file(cp.checkpoint_file)}
+    (cp.session_dir / "acceptance.json").write_text(json.dumps(report), encoding="utf-8")
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["acceptance"]["decision"] == "rejected"
+    assert view["acceptance"]["failed_required_checks"] == ["execution:succeeded"]
+
+    state["status"] = "running"
+    cp.save(state)
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["acceptance"]["decision"] == "stale"
+    assert view["acceptance"]["stale"] is True
 
 
 def test_stage_output_exposes_persisted_result_without_mutating_checkpoint(service):

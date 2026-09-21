@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from harness.core.io import safe_path, strip_outer_fence, file_lock
+from harness.core.io import safe_path, strip_outer_fence, file_lock, atomic_json
 from harness.tools.code_runner import write_code_files
 from harness.tools.validation import validate_files, validate_dependencies, validate_imports
 from harness.agents.documenter import DocumenterAgent
@@ -334,6 +334,28 @@ def test_session_file_lock(tmp_path):
                 pass
     with file_lock(tmp_path / "session.lock"):
         pass
+
+
+def test_atomic_json_retries_transient_replace_permission_error(tmp_path, monkeypatch):
+    import os
+
+    real_replace = os.replace
+    attempts = {"count": 0}
+
+    def transient_replace(source, destination):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise PermissionError("temporarily held by indexer")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr("harness.core.io.os.replace", transient_replace)
+    monkeypatch.setattr("harness.core.io.sleep", lambda _seconds: None)
+    path = tmp_path / "checkpoint.json"
+
+    atomic_json(path, {"status": "complete"})
+
+    assert attempts["count"] == 3
+    assert json.loads(path.read_text(encoding="utf-8")) == {"status": "complete"}
 
 
 def test_file_directory_collision_is_rejected_before_write(tmp_path):

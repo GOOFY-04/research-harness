@@ -26,6 +26,7 @@ from harness.agents.documenter import DocumenterAgent
 from harness.skills import CodeReviewSkill, DependencyCheckSkill, TestGenerationSkill
 from harness.tools import write_code_files
 from harness.tools.validation import validate_files
+from harness.acceptance import evaluate_session, write_report
 
 
 def setup_logging(level="INFO", log_file="harness.log"):
@@ -194,7 +195,10 @@ def cmd_run(args, config):
                if previous.get("stages", {}).get(sid) != final.get("stages", {}).get(sid)}
     archive_artifacts(cp, changed)
     export_artifacts(cp, final)
+    acceptance = evaluate_session(cp.session_dir, final, [stage.id for stage in engine.spec.stages])
+    report_path = write_report(cp.session_dir, acceptance)
     print(f"Session: {cp.session_id}; status: {final['status']}; directory: {cp.session_dir}")
+    print(f"Acceptance: {acceptance['decision']}; report: {report_path}")
     return 0 if final["status"] == "completed" else 1
 
 
@@ -268,6 +272,20 @@ def cmd_list(args, config):
     return 0
 
 
+def cmd_accept(args, config):
+    cp, state = existing_session(args, config)
+    engine = WorkflowEngine(workflow_for(args, config, state), cp, {})
+    report = evaluate_session(cp.session_dir, state, [stage.id for stage in engine.spec.stages])
+    if args.write_report:
+        path = write_report(cp.session_dir, report)
+        print(f"Acceptance report: {path}")
+    print(f"Acceptance decision: {report['decision']}")
+    for check in report["checks"]:
+        icon = "PASS" if check["passed"] else ("INFO" if not check["required"] else "FAIL")
+        print(f"[{icon}] {check['id']}: {check['detail']}")
+    return 0 if report["required_checks_passed"] else 1
+
+
 def main(argv=None):
     # Windows may inherit a legacy GBK console even when checkpoint text is
     # UTF-8. Reconfigure the CLI streams so status symbols and Chinese stage
@@ -285,12 +303,14 @@ def main(argv=None):
     run.add_argument("--session")
     run.add_argument("--workflow")
     run.add_argument("--no-resume", action="store_true")
-    for command in ("resume", "status", "repair", "reset-stage"):
+    for command in ("resume", "status", "repair", "reset-stage", "accept"):
         child = sub.add_parser(command)
         child.add_argument("--session", required=True)
         child.add_argument("--workflow")
         if command == "reset-stage":
             child.add_argument("stages", nargs="+")
+        if command == "accept":
+            child.add_argument("--write-report", action="store_true")
     sub.add_parser("list")
     args = parser.parse_args(argv)
     try:
@@ -298,7 +318,8 @@ def main(argv=None):
         setup_logging(**{"level": config.get("logging", {}).get("level", "INFO"),
                          "log_file": config.get("logging", {}).get("file", "")})
         action = {"run": cmd_run, "resume": cmd_resume, "status": cmd_status,
-                  "repair": cmd_repair, "reset-stage": cmd_reset_stage, "list": cmd_list}[args.command]
+                  "repair": cmd_repair, "reset-stage": cmd_reset_stage,
+                  "accept": cmd_accept, "list": cmd_list}[args.command]
         if args.command in ("run", "resume", "repair", "reset-stage"):
             if args.command != "run":
                 existing_session(args, config)

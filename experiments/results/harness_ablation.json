@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-21T10:32:21.081415+00:00",
+  "scope": "deterministic harness mechanism ablation; not a research-quality benchmark",
+  "recovery_ablation": {
+    "same_failed_prefix": true,
+    "resume_completed": true,
+    "restart_completed": true,
+    "additional_stage_calls": {
+      "checkpoint_resume": 1,
+      "stateless_restart": 2
+    },
+    "completed_stage_replayed": {
+      "checkpoint_resume": 0,
+      "stateless_restart": 1
+    },
+    "work_reduction_fraction": 0.5
+  },
+  "evidence_gate_ablation": {
+    "clean_package_accepted": true,
+    "naive_completed_gate_accepts_tampered_package": true,
+    "strict_gate_accepts_tampered_package": false,
+    "tamper_checks": [
+      "artifact:code/main.py"
+    ],
+    "naive_completed_gate_accepts_weak_review": true,
+    "strict_gate_accepts_weak_review": false,
+    "review_checks": [
+      "review:recommendation",
+      "review:no-major-weaknesses"
+    ]
+  }
+}
