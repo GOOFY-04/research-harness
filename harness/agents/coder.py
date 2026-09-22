@@ -116,6 +116,46 @@ def source_context(files, total_limit=60000, file_limit=16000):
     return result
 
 
+def ordered_manifest(manifest, session_dir):
+    """Validate the file graph before generation and put consumers after dependencies."""
+    items = manifest.get("files") if isinstance(manifest, dict) else None
+    if (not isinstance(items, list) or not items or manifest.get("parse_error")
+            or not all(isinstance(item, dict)
+                       and isinstance(item.get("path"), str)
+                       and isinstance(item.get("description"), str) for item in items)):
+        raise ValueError("manifest needs non-empty file objects with path and description")
+    paths = [item["path"] for item in items]
+    portable = [path.replace("\\", "/").casefold() for path in paths]
+    if len(set(portable)) != len(paths):
+        raise ValueError("manifest paths must be unique (including case and separator aliases)")
+    for path in paths:
+        safe_path(session_dir, path)
+    entry = manifest.get("entry_point")
+    if not isinstance(entry, str) or entry not in paths:
+        raise ValueError("manifest entry_point must name one of its files")
+    dependencies = {}
+    for item in items:
+        required = item.get("depends_on", [])
+        if (not isinstance(required, list)
+                or not all(isinstance(path, str) and path in paths for path in required)
+                or len(set(required)) != len(required)):
+            raise ValueError("manifest depends_on must list unique declared file paths")
+        dependencies[item["path"]] = set(required)
+    # Even old manifests without dependency metadata benefit from generating the
+    # experiment driver with all implemented APIs available.
+    dependencies[entry].update(path for path in paths if path != entry)
+    ordered, pending = [], list(items)
+    while pending:
+        ready = next((item for item in pending if not dependencies[item["path"]]), None)
+        if ready is None:
+            raise ValueError("manifest file dependencies contain a cycle or import the entry point")
+        pending.remove(ready)
+        ordered.append(ready)
+        for required in dependencies.values():
+            required.discard(ready["path"])
+    return {**manifest, "files": ordered}
+
+
 class CoderAgent(BaseAgent):
     required_fields = {"files": list, "entry_point": str, "dependencies": str,
                        "run_instructions": str, "test_snippet": str}
@@ -175,7 +215,11 @@ class CoderAgent(BaseAgent):
 Use CPU and tiny synthetic inputs. Assert only behavior supported by the supplied source,
 including its real return types. Do not invent a different interface contract, fixed metric
 values, downloads, training workloads, or publication claims. Prefer construction, shape,
-finite-value, and one-step integration checks. Return only Python code.
+finite-value, and multi-step integration checks using the entry point's exact calling sequence.
+For each stateful method AND baseline, use nondegenerate inputs after any required warmup
+and check that observations reach the intended model/statistics (no silent no-op update).
+Use the method invariants where executable. Do not assert that the proposed method wins.
+Return only Python code.
 {dependency_instruction}
 Public interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
 Implementation source: {json.dumps(source_context(files, total_limit=45000), ensure_ascii=False)}
@@ -216,6 +260,9 @@ Research context: {context}"""
             files = draft.get("files", [])
             if draft.get("context_sha256") != digest or not isinstance(manifest.get("files"), list):
                 return None
+            ordered = ordered_manifest(manifest, state.get("session_dir", "."))
+            if not files:
+                draft["manifest"] = manifest = ordered
             manifest_paths = [item["path"] for item in manifest["files"]]
             if manifest.get("entry_point") not in manifest_paths:
                 return None
@@ -251,6 +298,12 @@ Research context: {context}"""
         direction = state.get("metadata", {}).get("research_direction")
         if direction:
             research_context["original_research_direction"] = direction
+        method = state.get("stages", {}).get("method_design", {}).get("output") or {}
+        if method.get("invariants"):
+            research_context["method_invariants"] = method["invariants"]
+        feedback = state.get("stage_inputs_override", {}).get("method_design", {}).get("review_feedback")
+        if feedback:
+            research_context["previous_review_findings_to_address"] = feedback
         context = json.dumps(research_context, ensure_ascii=False, indent=2)
         dependency_instruction = self._dependency_instruction()
         draft_path, context_digest = self._draft_path(state, context)
@@ -263,9 +316,14 @@ Research context: {context}"""
         else:
             logger.info("[CoderAgent] generating implementation manifest")
             manifest_prompt = f"""You are implementing a research prototype.
-Design 6-10 files with consistent public interfaces. Return a JSON object:
-{{"files":[{{"path":"relative/path.py","description":"purpose","interface":"exact public class/function signatures"}}],
+Use the fewest cohesive files needed (typically 2-6), with consistent public interfaces.
+List dependencies before consumers and the entry point last. Return a JSON object:
+{{"files":[{{"path":"relative/path.py","description":"purpose","interface":"exact public class/function signatures",
+"depends_on":[],"contract":"return types, state ownership, required call order, warmup and update pre/postconditions"}}],
 "entry_point":"train.py","dependencies":"requirements.txt text","run_instructions":"Markdown"}}
+depends_on contains generated file paths, not package names. No file may import the entry point.
+For stateful comparisons, explicitly assign ownership of fitting, prediction, calibration and updates
+so neither the baseline nor the proposed model silently skips updates or observes held-out labels early.
 Use Python and honor the research design's dependency and resource constraints. Do not introduce
 PyTorch, OpenCV, GPU code, or other heavy packages unless the supplied design explicitly requires them.
 Allowed third-party dependencies: {json.dumps(self.allowed_dependencies, ensure_ascii=False)}.
@@ -293,20 +351,8 @@ Research design:
             for manifest_attempt in range(3):
                 manifest = self._parse_json(self._call_llm(manifest_prompt))
                 try:
-                    items = manifest.get("files")
-                    if (manifest.get("parse_error") or not isinstance(items, list) or not items
-                            or not all(isinstance(item, dict)
-                                       and isinstance(item.get("path"), str)
-                                       and isinstance(item.get("description"), str)
-                                       for item in items)):
-                        raise ValueError("manifest needs non-empty file objects with path and description")
-                    if not isinstance(manifest.get("entry_point"), str):
-                        raise ValueError("manifest needs an entry_point string")
-                    if manifest["entry_point"] not in [item["path"] for item in items]:
-                        raise ValueError("manifest entry_point must name one of its files")
+                    manifest = ordered_manifest(manifest, state.get("session_dir", "."))
                     validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
-                    for info in items:
-                        safe_path(state.get("session_dir", "."), info["path"])
                     break
                 except (ValueError, TypeError, KeyError) as exc:
                     if manifest_attempt == 2:
@@ -331,6 +377,9 @@ Return only the file content, optionally enclosed in a {language} fence.
 Honor the file extension: YAML/JSON files must contain data, never Python.
 Implement exactly the shared public interfaces, with all imports and complete bodies.
 Do not invent alternate names or parameters. Avoid work at import time.
+Use existing source to honor behavioral contracts, not only signatures. Explicitly satisfy update
+preconditions and state ownership for every compared method. Keep comments concise; do not include
+deliberation transcripts. A source block containing ...<truncated>... is only a context excerpt.
 {dependency_instruction}
 If this is the entry point, implement the complete deterministic experiment described in the manifest,
 including baseline comparison and the HARNESS_METRICS JSON line. Use fixed iteration counts for reproducibility;
@@ -338,6 +387,7 @@ never use a wall-clock while-loop as the normal training schedule. Keep defaults
 Design: {context}
 Manifest: {json.dumps(manifest, ensure_ascii=False)}
 Existing implemented interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
+Existing implementation source: {json.dumps(source_context(files, total_limit=45000), ensure_ascii=False)}
 Current file: {json.dumps(info, ensure_ascii=False)}"""
             for attempt in range(3):
                 content = strip_outer_fence(self._call_llm(prompt), (language, "yml", "md", "text"))
