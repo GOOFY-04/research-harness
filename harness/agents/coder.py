@@ -151,16 +151,23 @@ class CoderAgent(BaseAgent):
 
     def _call_repair(self, prompt):
         """Retry a failed repair sub-request without rerunning unchanged code."""
-        for attempt in range(2):
-            try:
-                return self._call_llm(prompt)
-            except (ConnectionError, OSError, RuntimeError, TimeoutError) as exc:
-                message = str(exc).lower()
-                transient = any(token in message for token in
-                                ("timeout", "timed out", "connection", "temporarily", "unavailable"))
-                if attempt or not transient:
-                    raise
-                logger.warning("Coder repair sub-request failed; retrying once: %s", exc)
+        previous_tokens = self.max_tokens
+        try:
+            # A repair returns one bounded source file or a tiny JSON plan.
+            # Keeping the ceiling below full-project generation reduces stalls.
+            self.max_tokens = min(self.max_tokens, 6144)
+            for attempt in range(2):
+                try:
+                    return self._call_llm(prompt)
+                except (ConnectionError, OSError, RuntimeError, TimeoutError) as exc:
+                    message = str(exc).lower()
+                    transient = any(token in message for token in
+                                    ("timeout", "timed out", "connection", "temporarily", "unavailable"))
+                    if attempt or not transient:
+                        raise
+                    logger.warning("Coder repair sub-request failed; retrying once: %s", exc)
+        finally:
+            self.max_tokens = previous_tokens
 
     def _generate_smoke_test(self, files, context, dependency_instruction, repair=False):
         """Generate a smoke test from real source contracts, not guessed signatures."""

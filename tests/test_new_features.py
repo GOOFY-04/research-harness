@@ -158,6 +158,17 @@ def test_coder_does_not_resume_draft_with_missing_entry_point(tmp_path):
     assert agent._load_draft(path, digest, state) is None
 
 
+def test_coder_repair_uses_bounded_output_budget(monkeypatch):
+    agent = CoderAgent()
+    observed = []
+    monkeypatch.setattr(agent, "_call_llm",
+                        lambda prompt: observed.append(agent.max_tokens) or "fixed")
+
+    assert agent._call_repair("repair") == "fixed"
+    assert observed == [6144]
+    assert agent.max_tokens == 8192
+
+
 def test_reviewer_prefers_executed_source_over_early_design_hint():
     prompt = ReviewerAgent().build_prompt("self_review", {
         "research_question": "Does the method work?",
