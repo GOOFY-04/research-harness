@@ -1,5 +1,10 @@
 # research-harness 更新记录
 
+## 2026-09-22 — 全新部署与启动检查
+
+- 全新 Windows 克隆测试发现 PowerShell 原生语法绑定在深目录下编译失败；fork 移除未使用的原生 grammar 构建许可，保留运行时使用的 WASM 文件。
+- 部署验证增加实际 Bash/PowerShell WASM 解析和 OpenCode `dev:harness --help` 启动检查，避免只验证独立研究 CLI。
+
 ## 2026-09-22 — 跨文件实现契约
 
 - 从真实保形预测失败案例定位到基线状态更新被静默跳过，保留拒绝结论，不把成功执行当作科学验收。

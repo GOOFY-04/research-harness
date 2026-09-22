@@ -244,6 +244,8 @@ def verify(root: Path, python: Path, opencode: Path, bun: str) -> None:
     run([python, "-m", "pytest", "-q"], cwd=root)
     run([bun, "run", "--cwd", "packages/research", "typecheck"], cwd=opencode)
     run([bun, "run", "research", "--help"], cwd=opencode)
+    run([bun, "run", "--cwd", "packages/opencode", "script/research-runtime-check.ts"], cwd=opencode)
+    run([bun, "run", "dev:harness", "--help"], cwd=opencode)
 
 
 def build_parser() -> argparse.ArgumentParser:
