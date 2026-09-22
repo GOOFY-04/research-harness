@@ -126,6 +126,38 @@ def test_coder_regenerates_invalid_manifest_in_place(tmp_path, monkeypatch):
     assert "without file contents" in prompts[1]
 
 
+def test_coder_rejects_manifest_whose_entry_point_is_not_a_declared_file(tmp_path, monkeypatch):
+    agent = CoderAgent(allowed_dependencies=[])
+    invalid = {"files": [{"path": "model.py", "description": "model"}],
+               "entry_point": "missing.py", "dependencies": "", "run_instructions": "python missing.py"}
+    valid = {"files": [{"path": "main.py", "description": "entry"}],
+             "entry_point": "main.py", "dependencies": "", "run_instructions": "python main.py"}
+    replies = iter([json.dumps(invalid), json.dumps(valid),
+                    "print('HARNESS_METRICS={\"score\": 1}')\n", "assert True\n"])
+    prompts = []
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or next(replies))
+
+    output = agent.run("coding", {}, {"session_dir": str(tmp_path)})
+
+    assert output["entry_point"] == "main.py"
+    assert "entry_point must name one of its files" in prompts[1]
+
+
+def test_coder_does_not_resume_draft_with_missing_entry_point(tmp_path):
+    agent = CoderAgent()
+    state = {"session_dir": str(tmp_path)}
+    path, digest = agent._draft_path(state, "same context")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "context_sha256": digest,
+        "manifest": {"files": [{"path": "model.py", "description": "model"}],
+                     "entry_point": "missing.py", "dependencies": ""},
+        "files": [],
+    }), encoding="utf-8")
+
+    assert agent._load_draft(path, digest, state) is None
+
+
 def test_reviewer_prefers_executed_source_over_early_design_hint():
     prompt = ReviewerAgent().build_prompt("self_review", {
         "research_question": "Does the method work?",

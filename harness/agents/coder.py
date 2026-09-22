@@ -194,6 +194,8 @@ Research context: {context}"""
             if draft.get("context_sha256") != digest or not isinstance(manifest.get("files"), list):
                 return None
             manifest_paths = [item["path"] for item in manifest["files"]]
+            if manifest.get("entry_point") not in manifest_paths:
+                return None
             if [item.get("path") for item in files] != manifest_paths[:len(files)]:
                 return None
             validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
@@ -277,6 +279,8 @@ Research design:
                         raise ValueError("manifest needs non-empty file objects with path and description")
                     if not isinstance(manifest.get("entry_point"), str):
                         raise ValueError("manifest needs an entry_point string")
+                    if manifest["entry_point"] not in [item["path"] for item in items]:
+                        raise ValueError("manifest entry_point must name one of its files")
                     validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
                     for info in items:
                         safe_path(state.get("session_dir", "."), info["path"])
