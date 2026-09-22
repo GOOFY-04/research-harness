@@ -3,6 +3,7 @@ import os
 import signal
 import subprocess
 import tempfile
+from harness.tools.metrics import capture_metrics
 
 
 def run_command(command: list[str], cwd, timeout: float, log_limit=20000) -> dict:
@@ -45,9 +46,11 @@ def run_command(command: list[str], cwd, timeout: float, log_limit=20000) -> dic
             if isinstance(exc, KeyboardInterrupt):
                 raise
         def read_tail(stream):
-            size = stream.tell()
+            size = stream.seek(0, 2)
             stream.seek(max(0, size - log_limit))
             return ("[log truncated]\n" if size > log_limit else "") + stream.read().decode("utf-8", errors="replace")
+        metrics, metric_errors = capture_metrics(out)
         return {"success": process.returncode == 0 and not timed_out,
                 "returncode": process.returncode, "stdout": read_tail(out),
-                "stderr": read_tail(err), "timed_out": timed_out, "command": command}
+                "stderr": read_tail(err), "timed_out": timed_out, "command": command,
+                "emitted_metrics": metrics, "metric_capture_errors": metric_errors}

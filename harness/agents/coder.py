@@ -49,6 +49,7 @@ def execution_failure_context(output):
             "timed_out": run.get("timed_out", False),
             "stdout": _tail(run.get("stdout")),
             "stderr": _tail(run.get("stderr")),
+            "emitted_metrics": run.get("emitted_metrics", {}),
         })
     return {
         "error": output.get("error", "") if isinstance(output, dict) else str(output),
@@ -541,6 +542,10 @@ Current source:
 Return only the complete replacement content, optionally enclosed in one {language} fence.
 Preserve public interfaces unless the failure proves an interface is inconsistent; keep all callers consistent.
 Do not hard-code expected outputs or metrics, disable assertions, catch-and-ignore failures, or remove experiment steps.
+Required emitted numeric keys: {json.dumps(self.required_metric_keys, ensure_ascii=False)}.
+These must be numeric measurements, not method-name strings or renamed aliases. In particular,
+proposed_primary and baseline_primary must hold their measured scores, and improvement_delta must
+equal proposed_primary - baseline_primary. Retain the existing secondary results as well.
 {dependency_instruction}
 Diagnosis: {plan.get('diagnosis', '')}
 Execution failure: {json.dumps(failure, ensure_ascii=False)}

@@ -106,6 +106,66 @@ def test_explicit_entry_run_after_test(tmp_path):
     assert result["success"] and len(result["runs"]) == 2
 
 
+def test_large_metric_line_survives_log_tail_truncation(tmp_path):
+    data = inputs(test="")
+    data["files"][1]["content"] = (
+        "import json\nprint('HARNESS_METRICS=' + json.dumps({"
+        "'score': 0.75, 'raw_samples': [0.12345] * 8000}))\n"
+        "print('postprocessing log ' * 2000)\n"
+    )
+    result = ExecutorAgent(install_dependencies=False, require_metrics=True).run(
+        "exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is True
+    assert "HARNESS_METRICS=" not in result["runs"][0]["stdout"]
+    assert len(result["runs"][0]["stdout"]) < 20100
+    assert result["analysis"]["metrics"] == {"score": 0.75}
+    assert result["runs"][0]["emitted_metrics"] == {"score": 0.75}
+
+
+def test_smoke_metrics_cannot_satisfy_silent_experiment(tmp_path):
+    data = inputs(test="print('HARNESS_METRICS={\"score\": 0.99}')")
+    result = ExecutorAgent(install_dependencies=False, run_entry_point=True, require_metrics=True).run(
+        "exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is False
+    assert result["analysis"]["metrics"] == {}
+    assert result["runs"][0]["emitted_metrics"] == {"score": 0.99}
+
+
+def test_only_final_experiment_envelope_is_used(tmp_path):
+    data = inputs(test="print('HARNESS_METRICS={\"test_only\": 100}')")
+    data["files"][1]["content"] = (
+        "print('HARNESS_METRICS={\"old_only\": 1, \"score\": 0.2}')\n"
+        "print('HARNESS_METRICS={\"score\": 0.75}')\n"
+    )
+    result = ExecutorAgent(install_dependencies=False, run_entry_point=True, require_metrics=True).run(
+        "exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is True
+    assert result["analysis"]["metrics"] == {"score": 0.75}
+
+
+def test_oversized_metric_line_fails_without_loading_unbounded_output(tmp_path):
+    data = inputs(test="")
+    data["files"][1]["content"] = (
+        "import json\nprint('HARNESS_METRICS=' + json.dumps({'score': 1, 'raw': 'x' * 1100000}))"
+    )
+    result = ExecutorAgent(install_dependencies=False, require_metrics=True).run(
+        "exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is False
+    assert "capture limits" in result["error"]
+    assert "save raw samples separately" in result["error"]
+
+
+def test_malformed_final_metrics_do_not_reuse_prior_valid_line(tmp_path):
+    data = inputs(test="")
+    data["files"][1]["content"] = (
+        "print('HARNESS_METRICS={\"score\": 0.9}')\nprint('HARNESS_METRICS=broken')"
+    )
+    result = ExecutorAgent(install_dependencies=False, require_metrics=True).run(
+        "exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is False
+    assert result["analysis"]["metrics"] == {}
+
+
 def test_failed_test_does_not_run_entry(tmp_path):
     result = ExecutorAgent(install_dependencies=False, run_entry_point=True).run(
         "exec", inputs("raise RuntimeError('broken')"), {"session_dir":str(tmp_path)})

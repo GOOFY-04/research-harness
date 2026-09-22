@@ -1,7 +1,5 @@
 """Execute generated code in a fresh source directory and a session virtualenv."""
-import json
 import logging
-import math
 import os
 import shutil
 import sys
@@ -14,28 +12,12 @@ from harness.core.io import safe_path
 from harness.core.skill import get_global_registry
 from harness.tools.code_runner import write_code_files
 from harness.tools.process import run_command
+from harness.tools.metrics import flatten_numeric_metrics, parse_metric_line
 from harness.tools.validation import (metric_constraint_errors, validate_dependencies,
                                       validate_files, validate_imports,
                                       validate_metric_constraints, comparison_metric_errors)
 
 logger = logging.getLogger(__name__)
-
-
-def flatten_numeric_metrics(value, prefix=""):
-    """Preserve numeric leaves from structured metric envelopes using dotted paths."""
-    flattened = {}
-    if not isinstance(value, dict):
-        return flattened
-    for key, item in value.items():
-        if not isinstance(key, str) or not key or "." in key:
-            continue
-        path = f"{prefix}.{key}" if prefix else key
-        if isinstance(item, dict):
-            flattened.update(flatten_numeric_metrics(item, path))
-        elif (isinstance(item, (int, float)) and not isinstance(item, bool)
-              and math.isfinite(item)):
-            flattened[path] = item
-    return flattened
 
 
 class ExecutorAgent(BaseAgent):
@@ -198,20 +180,20 @@ class ExecutorAgent(BaseAgent):
     def _report(self, success, code_dir, install_log, runs, kind, error=""):
         log = "\n".join(run["stdout"] + run["stderr"] for run in runs)
         metrics = {}
-        # Only accept explicitly emitted machine-readable metrics, never invent them.
-        for line in log.splitlines():
-            values = None
-            try:
-                if line.startswith("HARNESS_METRICS="):
-                    values = json.loads(line.partition("=")[2])
-                elif line.startswith("{"):
-                    envelope = json.loads(line)
-                    if isinstance(envelope, dict):
-                        values = envelope.get("HARNESS_METRICS")
-            except ValueError:
-                continue
-            if isinstance(values, dict):
-                metrics.update(flatten_numeric_metrics(values))
+        # In entry-point mode the last run is the experiment. A smoke test's
+        # metrics must never stand in for missing experiment evidence.
+        if runs:
+            evidence = runs[-1]
+            if "emitted_metrics" in evidence:
+                metrics = dict(evidence["emitted_metrics"])
+            else:
+                for line in evidence["stdout"].splitlines():
+                    values = parse_metric_line(line)
+                    if values is not None:
+                        metrics = values
+            if evidence.get("metric_capture_errors"):
+                success = False
+                error = "HARNESS_METRICS violates capture limits: " + "; ".join(evidence["metric_capture_errors"])
         summary = (f"{kind}: {'passed' if success else 'failed'}. "
                    + ("Quick validation only; no full experiment has been established."
                       if kind == "smoke_test" else "See command logs for execution scope."))

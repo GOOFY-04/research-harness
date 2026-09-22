@@ -155,6 +155,7 @@ Coder 的 manifest、每个已验证文件和 smoke test 会按研究上下文�
 - 指标 JSON 可嵌套，Harness 以点路径保留所有有限数值叶子。完整实验配置强制输出 `proposed_primary`、`baseline_primary`、`improvement_delta` 与 `sample_count`，校验差值等于前两者之差且样本数为正整数。
 - `required_metric_keys` 校验指标是否齐全；`metric_constraints` 可为指标设置 `min`/`max` 数值边界。违反边界的真实执行会失败并把观测值反馈给自动修复器。
 - 子进程日志有长度限制；超时或中断时清理进程树。模型服务凭据不传给生成程序。
+- 指标从正式入口的完整标准输出单独采集，不受界面日志截尾影响，也不混入 smoke test 的指标。多个指标对象以最后一个完整对象为准；单行指标上限为 1 MiB，大量逐样本数据应另存文件。超限或损坏的显式指标行会使执行失败。
 - 虚拟环境用于依赖隔离，**不是操作系统安全沙箱**；生成程序仍使用当前用户权限。
 - 仅从日志中的 `HARNESS_METRICS={"loss": 0.2}` 等 JSON 行提取数字指标，不由模型编造指标。
 - 文献元数据来自 arXiv；检索异常使阶段失败。参考文献按检索元数据确定性生成到 `references.bib`，正文引用键必须存在。
