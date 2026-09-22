@@ -380,7 +380,8 @@ Diagnose the runtime or installation failure and propose the smallest repair.
 Return JSON only:
 {{"diagnosis":"concrete root cause","files":["existing/path.py"],
   "dependencies":null,"regenerate_test":false}}
-"files" must contain only existing generated paths and at most six entries.
+"files" must contain only existing generated paths and at most two entries. Prefer one file;
+use two only when a public interface and its caller must change together.
 Use dependencies only when the requirements text itself must change; otherwise return null.
 When the smoke test assumed behavior that the supplied source never promised, set
 regenerate_test=true and do not distort correct source code to satisfy that bad assumption.
@@ -414,10 +415,10 @@ Current source:
                     selected = plan.get("files") if isinstance(plan, dict) else None
                     dependency_change = plan.get("dependencies") if isinstance(plan, dict) else None
                     regenerate_test = plan.get("regenerate_test", False) if isinstance(plan, dict) else False
-                    if (not isinstance(selected, list) or len(selected) > 6
+                    if (not isinstance(selected, list) or len(selected) > 2
                             or not all(isinstance(path, str) and path in by_path for path in selected)
                             or len(set(selected)) != len(selected)):
-                        raise ValueError("files must be a unique list of at most six existing paths")
+                        raise ValueError("files must be a unique list of at most two existing paths")
                     # Models commonly emit [] to mean no dependency change. A list
                     # of requirement strings is also safe to normalize deterministically.
                     if isinstance(dependency_change, list):

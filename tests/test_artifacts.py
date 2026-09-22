@@ -437,6 +437,32 @@ def test_coder_regenerates_smoke_test_when_it_guessed_the_wrong_contract(tmp_pat
     assert repaired["repair_history"][0]["changed_files"] == []
 
 
+def test_coder_rejects_overbroad_model_repair_plan(tmp_path, monkeypatch):
+    agent = CoderAgent()
+    previous = {
+        "files": [{"path": name, "content": f"value = {index}\n"}
+                  for index, name in enumerate(("a.py", "b.py", "c.py"))],
+        "entry_point": "a.py", "dependencies": "", "run_instructions": "python a.py",
+        "test_snippet": "import a",
+    }
+    replies = iter([
+        json.dumps({"diagnosis": "too broad", "files": ["a.py", "b.py", "c.py"],
+                    "dependencies": None, "regenerate_test": False}),
+        json.dumps({"diagnosis": "localized", "files": ["a.py"],
+                    "dependencies": None, "regenerate_test": False}),
+        "value = 9\n",
+    ])
+    prompts = []
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or next(replies))
+    failure = {"success": False, "error": "wrong result", "execution_kind": "smoke_test",
+               "runs": [{"returncode": 1, "stdout": "expected 9", "stderr": ""}]}
+
+    repaired = agent.repair("coding", previous, failure, {"session_dir": str(tmp_path)})
+
+    assert repaired["repair_history"][0]["changed_files"] == ["a.py"]
+    assert "at most two" in prompts[1]
+
+
 def test_session_file_lock(tmp_path):
     with file_lock(tmp_path / "session.lock"):
         with pytest.raises(RuntimeError):
