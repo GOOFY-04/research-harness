@@ -84,6 +84,22 @@ def traceback_repair_plan(failure, generated_paths):
             "localization": "deepest_generated_traceback_frame"}
 
 
+def metric_contract_repair_plan(failure, entry_point, generated_paths):
+    """Metric protocol failures are emitted by the entry point, so localize them directly."""
+    error = str(failure.get("error", "")) if isinstance(failure, dict) else ""
+    if (entry_point not in generated_paths
+            or not (error.startswith("Entry point completed without a HARNESS_METRICS")
+                    or error.startswith("HARNESS_METRICS is missing required keys")
+                    or error.startswith("HARNESS_METRICS violates"))):
+        return None
+    detail = error
+    if error.startswith("Entry point completed without"):
+        detail += (". Print exactly one final line with the literal prefix HARNESS_METRICS= "
+                   "followed immediately by a JSON object; a space instead of '=' is invalid")
+    return {"diagnosis": detail, "files": [entry_point], "dependencies": None,
+            "regenerate_test": False, "localization": "metric_contract_entry_point"}
+
+
 def source_context(files, total_limit=60000, file_limit=16000):
     """Bound repair prompts while retaining both ends of larger generated files."""
     result, remaining = [], total_limit
@@ -401,9 +417,11 @@ Current interfaces:
 {json.dumps(interfaces(files), ensure_ascii=False, indent=2)}
 Current source:
 {json.dumps(sources, ensure_ascii=False, indent=2)}"""
-        plan = traceback_repair_plan(failure, by_path)
+        plan = (metric_contract_repair_plan(failure, previous_output["entry_point"], by_path)
+                or traceback_repair_plan(failure, by_path))
         if plan:
-            logger.info("[CoderAgent] traceback localized repair to %s", plan["files"][0])
+            logger.info("[CoderAgent] %s localized repair to %s",
+                        plan["localization"], plan["files"][0])
             selected = plan["files"]
             dependency_change = None
             regenerate_test = False

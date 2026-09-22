@@ -411,6 +411,30 @@ def test_coder_uses_deepest_traceback_frame_without_model_planning(tmp_path, mon
     assert repaired["repair_history"][0]["localization"] == "deepest_generated_traceback_frame"
 
 
+def test_coder_localizes_metric_protocol_failure_to_entry_point(tmp_path, monkeypatch):
+    agent = CoderAgent(required_metric_keys=["score"])
+    previous = {
+        "files": [{"path": "model.py", "content": "value = 1\n"},
+                  {"path": "train.py", "content": "print('HARNESS_METRICS {\"score\": 1}')\n"}],
+        "entry_point": "train.py", "dependencies": "", "run_instructions": "python train.py",
+        "test_snippet": "from model import value\nassert value == 1",
+    }
+    prompts = []
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or
+                        "print('HARNESS_METRICS={\"score\": 1}')\n")
+    failure = {"success": False,
+               "error": "Entry point completed without a HARNESS_METRICS JSON line",
+               "execution_kind": "entry_point", "runs": [{"returncode": 0, "stdout":
+               'HARNESS_METRICS {"score": 1}', "stderr": ""}]}
+
+    repaired = agent.repair("coding", previous, failure, {"session_dir": str(tmp_path)})
+
+    assert len(prompts) == 1
+    assert "literal prefix HARNESS_METRICS=" in prompts[0]
+    assert repaired["repair_history"][0]["changed_files"] == ["train.py"]
+    assert repaired["repair_history"][0]["localization"] == "metric_contract_entry_point"
+
+
 def test_coder_regenerates_smoke_test_when_it_guessed_the_wrong_contract(tmp_path, monkeypatch):
     agent = CoderAgent()
     previous = {
