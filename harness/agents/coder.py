@@ -270,6 +270,10 @@ finite-value, and multi-step integration checks using the entry point's exact ca
 For each stateful method AND baseline, use nondegenerate inputs after any required warmup
 and check that observations reach the intended model/statistics (no silent no-op update).
 Use the method invariants where executable. Do not assert that the proposed method wins.
+Use ordinary top-level assertions; do not build a custom test runner or catch assertion failures,
+because the harness needs the complete traceback. Keep the test compact and omit tutorial comments.
+For floating-point boundary claims, use justified tolerances: an asymptotic limit does not imply
+exact equality at a finite input (for example, sigmoid(-100) is positive, not exactly zero).
 Return only Python code.
 {dependency_instruction}
 Public interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
