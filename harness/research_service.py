@@ -182,7 +182,10 @@ class ResearchService:
         if acceptance_path.is_file():
             try:
                 saved = json.loads(acceptance_path.read_text(encoding="utf-8"))
+                requirements_path = safe_path(cp.session_dir, "requirements_audit.json")
+                requirements_hash = sha256_file(requirements_path) if requirements_path.is_file() else None
                 stale = (saved.get("policy_version") != ACCEPTANCE_POLICY_VERSION
+                         or saved.get("requirements_audit_sha256") != requirements_hash
                          or saved.get("checkpoint_updated_at") != state.get("_updated_at")
                          or saved.get("checkpoint_sha256") != sha256_file(cp.checkpoint_file))
                 acceptance = {

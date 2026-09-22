@@ -155,6 +155,15 @@ def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(servic
     assert view["acceptance"]["decision"] == "rejected"
     assert view["acceptance"]["failed_required_checks"] == ["execution:succeeded"]
 
+    audit_path = cp.session_dir / "requirements_audit.json"
+    audit_path.write_text("{}", encoding="utf-8")
+    assert service.snapshot("study", {})["acceptance"]["stale"]
+    report["requirements_audit_sha256"] = sha256_file(audit_path)
+    (cp.session_dir / "acceptance.json").write_text(json.dumps(report), encoding="utf-8")
+    assert not service.snapshot("study", {})["acceptance"]["stale"]
+    audit_path.unlink()
+    assert service.snapshot("study", {})["acceptance"]["stale"]
+
     state["status"] = "running"
     cp.save(state)
     view = service.handle({"action": "status", "session": "study"})

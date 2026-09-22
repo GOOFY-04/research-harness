@@ -17,11 +17,12 @@ from .core.io import safe_path
 from .tools.validation import comparison_metric_errors
 from .tools.execution_evidence import verify_execution_evidence
 from .tools.experiment_contract import verify_experiment_evidence
+from .tools.requirements_audit import verify_requirements_audit
 from .agents.method_audit import verify_record
 
 
 APPROVED_RECOMMENDATIONS = {"accept", "weak_accept"}
-ACCEPTANCE_POLICY_VERSION = 3
+ACCEPTANCE_POLICY_VERSION = 4
 
 
 def _check(checks: list[dict[str, Any]], check_id: str, category: str,
@@ -146,6 +147,12 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
            ("paired sample hashes, means, differences and SE verified" if paired_required
             else "paired experiment contract is not configured"), required=paired_required)
     manifest.extend(paired_manifest)
+    requirement_errors, requirement_manifest, requirement_digest = verify_requirements_audit(root, state)
+    if requirement_digest is not None or requirement_errors:
+        _check(checks, "evidence:original-requirements", "traceability", not requirement_errors,
+               "; ".join(requirement_errors) if requirement_errors else
+               "independent checks agree with quoted original research constraints")
+        manifest.extend(requirement_manifest)
     metrics = _numeric_metrics(execution.get("analysis", {}).get("metrics"))
     _check(checks, "execution:numeric-metrics", "execution", bool(metrics),
            f"{len(metrics)} numeric metrics persisted" if metrics else "no numeric metrics persisted")
@@ -187,7 +194,7 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     audit_trace_ok = True
     if isinstance(consistency_audit, dict) and "protocol_version" in consistency_audit:
         try:
-            verify_record(method_output, consistency_audit)
+            verify_record(method_output, consistency_audit, original_direction=direction)
         except (ValueError, TypeError, KeyError):
             audit_trace_ok = False
     revision_trace_ok = (
@@ -270,6 +277,7 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     return {
         "schema_version": 1,
         "policy_version": ACCEPTANCE_POLICY_VERSION,
+        "requirements_audit_sha256": requirement_digest,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session": root.name,
         "checkpoint_updated_at": state.get("_updated_at"),

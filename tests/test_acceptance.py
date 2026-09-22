@@ -103,6 +103,23 @@ def test_acceptance_report_is_machine_readable(tmp_path):
     assert saved["session"] == tmp_path.name
 
 
+def test_original_requirement_failure_blocks_otherwise_accepted_session(tmp_path):
+    from tests.test_requirements_audit import make_audit, save
+    from harness.tools.requirements_audit import audit_context_digest
+
+    state = completed_state()
+    export_fixture(tmp_path, state)
+    assert evaluate_session(tmp_path, state, STAGES)["decision"] == "accepted"
+    _, record = make_audit(tmp_path)
+    state["metadata"]["research_direction"] = "Probability at zero must be 0.5."
+    record["context_sha256"] = audit_context_digest(state)
+    record["checks"][0]["expected"] = 0.95
+    save(tmp_path, record)
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert report["decision"] == "rejected"
+    assert report["failed_required_checks"] == ["evidence:original-requirements"]
+
+
 def test_acceptance_requires_original_process_evidence(tmp_path):
     state = completed_state()
     export_fixture(tmp_path, state)

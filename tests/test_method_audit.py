@@ -4,7 +4,7 @@ import json
 import pytest
 
 from harness.agents.method import MethodAgent
-from harness.agents.method_audit import candidate_digest, verify_record
+from harness.agents.method_audit import candidate_digest, quote_catalog, run_audit, validate_verification, verify_record
 from harness.core.io import OutputValidationError
 
 
@@ -80,8 +80,51 @@ def test_initial_design_is_audited_and_retains_user_constraints(candidate, tmp_p
                        {"session_dir": str(tmp_path), "metadata": {
                            "research_direction": "Use 50 paired seeds and hold out test samples"}})
     assert len(prompts) == 2
-    assert "50 paired seeds" in prompts[0]
+    assert all("50 paired seeds" in prompt for prompt in prompts)
     assert output["consistency_audit"]["valid"] is True
+
+
+def test_audit_context_change_cannot_reuse_cached_approval(candidate):
+    prompts = []
+    def call(prompt):
+        prompts.append(prompt)
+        return {"valid": True, "issues": []}
+    first = run_audit(candidate, "question", call, {}, lambda value: None, original_direction="scope A")
+    second = run_audit(candidate, "question", call, first, lambda value: None, original_direction="scope B")
+    assert len(prompts) == 2 and "scope B" in prompts[-1]
+    verify_record(candidate, second, original_direction="scope B")
+    with pytest.raises(ValueError, match="direction mismatch"):
+        verify_record(candidate, second, original_direction="scope A")
+    changed = copy.deepcopy(second)
+    changed["context"]["original_direction"] = "edited"
+    with pytest.raises(ValueError, match="context hash mismatch"):
+        verify_record(candidate, changed)
+
+
+def test_confirmation_sees_original_constraints(candidate, criticism):
+    prompts, replies = [], iter([criticism, verification()])
+    def call(prompt):
+        prompts.append(prompt)
+        return next(replies)
+    run_audit(candidate, "question", call, {}, lambda value: None, original_direction="fixed scope")
+    assert len(prompts) == 2 and all("fixed scope" in prompt for prompt in prompts)
+
+
+def test_quote_id_resolves_exact_original_source(candidate, criticism):
+    catalog = quote_catalog(candidate)
+    ref = next(key for key, value in catalog.items() if value == "fallback = min(alpha_grid)")
+    response = verification()
+    response["decisions"][0].pop("candidate_quote")
+    response["decisions"][0]["candidate_quote_id"] = ref
+    result = validate_verification(response, candidate, criticism)
+    assert result[0]["candidate_quote"] == "fallback = min(alpha_grid)"
+    assert "candidate_quote" not in response["decisions"][0]
+    response["decisions"][0]["candidate_quote"] = "fallback = max(alpha_grid)"
+    with pytest.raises(ValueError, match="differs from selected"):
+        validate_verification(response, candidate, criticism)
+    response["decisions"][0]["candidate_quote_id"] = "Q999999"
+    with pytest.raises(ValueError, match="Unknown candidate quote"):
+        validate_verification(response, candidate, criticism)
 
 
 def test_confirmation_timeout_resumes_only_confirmation_in_fresh_agent(

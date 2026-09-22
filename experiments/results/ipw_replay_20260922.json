@@ -1,0 +1,24 @@
+{
+  "scope": "Offline diagnostic replay, not a full workflow or independent statistical replication",
+  "same_metrics": true,
+  "metric_count": 36,
+  "recorded_workflow_completed": true,
+  "original_acceptance": "rejected",
+  "diagnostic": {
+    "session": "ipw_offline_replay",
+    "passed": false,
+    "failures": [
+      "probability-sign: observed=0.15728262981990582, expected=0.8427173701800942; requirement: p(x)=0.05+0.9/(1+exp(-a*x))",
+      "proposed-primary-scope: observed=-0.08715182454108839, expected=0.0; requirement: 每个种子组内对三个场景的平方误差做等权平均，主指标为这50个种子组的平均MSE",
+      "baseline-primary-scope: observed=0.015068042612760568, expected=0.0; requirement: 每个种子组内对三个场景的平方误差做等权平均，主指标为这50个种子组的平均MSE"
+    ],
+    "measured": {
+      "p_x1_a2": 0.15728262981990582,
+      "p_x0_a0": 0.5,
+      "proposed_aggregation_error": -0.08715182454108839,
+      "baseline_aggregation_error": 0.015068042612760568
+    },
+    "scope": "Post-run human-authored diagnostic against pre-existing explicit constraints; not an independent full statistical replication"
+  },
+  "expected_failures_reproduced": true
+}

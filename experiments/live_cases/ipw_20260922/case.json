@@ -1,0 +1,258 @@
+{
+  "scope": "Exact generated source and model records; known original-question violations are intentionally preserved.",
+  "session": "paired_ipw_20260922",
+  "original_direction": "研究课题：当观测缺失依赖协变量时，固定逆概率权重裁剪能否降低总体均值估计的MSE，其收益或失效边界是什么？裁剪本身是已有方法，不得声称发明新算法；本次要以透明、可证伪的合成对照验证完整harness。固定设定：x和epsilon独立服从N(0,1)，y=1+2*x+epsilon，因此目标总体均值为1；观测指示R以已知概率p(x)=0.05+0.9/(1+exp(-a*x))独立生成，a取0、2、5。每次试验n=128。提出方法为固定阈值5的裁剪Horvitz-Thompson估计器，sum(R*y*min(1/p,5))/n；主基线是未裁剪HT，另报告自归一化Hajek估计器sum(R*y/p)/sum(R/p)，分母为0时返回0并报告次数。禁止按测试结果调阈值、删场景或换假设。每场景固定50个独立种子，不同方法在完全相同数据和缺失掩码上比较；每个种子组内对三个场景的平方误差做等权平均，主指标为这50个种子组的平均MSE，sample_count=50。单独报告三个场景中各方法的MSE、偏差和方差，保留逐种子配对数据，按独立种子组而非组内观测计算不确定性。编码前声明experiment_contract，明确指标定义、单位、最小化方向、配对单位、聚合方式及评测范围；为主要对照、逐场景对照及Hajek次要对照生成results/下的运行时JSON配对数据，供harness独立重算。消融用阈值无穷验证裁剪实现退化为未裁剪HT；禁止硬编码结果。全部使用Python标准库，不下载数据，CPU三分钟内完成。文献需有真实可追溯标识。结论允许支持、反驳或不充分；不能把没有新意或负结果当作测量无效，也不能仅凭描述性SE声称统计显著。论文和README必须如实报告固定合成设定、全部主要结果和局限。",
+  "planning_question": "在观测缺失概率依赖于协变量x的合成线性模型设定下，固定阈值为5的裁剪逆概率权重Horvitz-Thompson估计器是否比未裁剪Horvitz-Thompson估计器及自归一化Hajek估计器更能降低总体均值估计的均方误差（MSE），以及其失效边界如何？",
+  "method": {
+    "method_name": "CRIPW-DB (Capped Reverse Probability Weighting with Deviation-Bias Boundary Analysis / 固定阈值裁剪逆概率加权及偏差-方差边界分析)",
+    "overview": "本研究不发明新的点估计器，而是构建一个透明、可证伪的合成实验框架，系统评估固定阈值为5的裁剪Horvitz-Thompson（C-IPW）估计器在协变量依赖缺失机制下的性能。核心在于量化分析C-IPW相对于未裁剪HT和Hajek估计器的均方误差（MSE）变化，重点揭示其失效边界。通过引入“偏差-方差分解”视角，明确固定裁剪阈值在不同缺失概率分布下的代价。该方法利用等权平均的配对种子设计，提供严谨的不确定性估计，以验证理论预测。",
+    "key_insight": "固定阈值裁剪通过牺牲无偏性（引入偏差）来大幅降低方差，其MSE优势仅在极端权重导致的方差爆炸风险大于偏差平方累积时成立；失效边界取决于缺失概率的下确界与阈值的关系。",
+    "components": [
+      {
+        "name": "Synthetic Data Harness",
+        "role": "生成协变量依赖的缺失机制及数据，确保所有方法在相同数据结构上公平比较。",
+        "novelty": "严格固定a值（0, 2, 5）以覆盖从随机缺失（MAR近似）到强协变量依赖（MNAR特征）的过渡，建立失效边界的实证基线。",
+        "implementation_hint": "使用Python标准库生成N(0,1)的x和eps，计算y。利用sigmoid函数计算p(x)，生成二项分布的R指示器。"
+      },
+      {
+        "name": "Estimator Suite",
+        "role": "实现未裁剪HT、固定阈值5的裁剪HT、Hajek估计器，并处理Hajek分母为0的边界情况。",
+        "novelty": "裁剪HT严格定义为 sum(R*y*min(1/p,5))/n，而非自适应阈值；Hajek估计器显式处理零分母并记录频率，作为鲁棒性对照。",
+        "implementation_hint": "计算权重w=1/p，裁剪权重w_c=min(w, 5)。HT: sum(R*y*w)/n; C-HT: sum(R*y*w_c)/n; Hajek: sum(R*y*w)/sum(R*w) (if denom>0 else 0)。"
+      },
+      {
+        "name": "Boundary & Aggregation Module",
+        "role": "计算逐场景MSE、偏差、方差，进行种子级等权聚合，并识别失效边界（即MSE反转点）。",
+        "novelty": "将失效边界定义为裁剪HT的MSE首次显著高于未裁剪HT或Hajek的临界缺失概率模式（a值），而非单一MSE最小值。",
+        "implementation_hint": "对50个种子组计算平方误差，等权平均。比较三种方法的MSE。边界分析：找出a值使得var(HT) - var(C-HT) < bias^2(C-HT)的条件。"
+      }
+    ],
+    "algorithm": "1. Define parameters: a ∈ {0, 2, 5}, n=128, threshold=5, S=50 seeds.\n2. For each a in a_list:\n   a. Initialize empty lists for HT, C-HT, Hajek MSE/SE/Var.\n   b. For seed in range(S):\n      i.   Generate x ~ N(0,1), eps ~ N(0,1), size=n.\n      ii.  Compute y = 1 + 2*x + eps.\n      iii. Compute p(x) = 0.05 + 0.9*sigmoid(-a*x).\n      iv.  Generate R ~ Bernoulli(p(x)).\n      v.   Compute weights: w=1/p, w_c=min(w, 5).\n      vi.  est_HT = sum(R*y*w)/n.\n      vii. est_CHT = sum(R*y*w_c)/n.\n      viii. denom_Hajek = sum(R*w).\n      ix.   est_Hajek = sum(R*y*w)/denom_Hajek if denom_Hajek>0 else 0.\n      x.    Compute sq_err for each estimator against true_mean=1.\n      xi.   Append sq_err to scenario_lists[a].\n   c. Compute Scenario MSE: mean(sq_err_list).\n   d. Compute Scenario Bias: mean(est_list) - 1 (requires storing ests).\n   e. Compute Scenario Var: var(est_list).\n3. Final Report: Aggregate MSE across a (equal weight 1/3).\n4. Boundary Check: Identify a where MSE_CHT > min(MSE_HT, MSE_Hajek).",
+    "complexity": {
+      "time": "O(S * len(a_list) * n)，其中S=50, len(a_list)=3, n=128。总运算量约 1.92e4 次迭代，远低于CPU三分钟限制。",
+      "space": "O(S * len(a_list) * n) 用于存储逐种子数据以计算方差和配对统计量，约 1.92e4 个浮点数，内存占用极小。"
+    },
+    "method_section_draft": "本研究采用合成线性模型 $y = 1 + 2x + \\epsilon$，其中 $x, \\epsilon \\sim N(0,1)$ 独立，目标估计量为总体均值 $\\mu=1$。缺失指示 $R$ 服从伯努利分布，概率 $p(x) = 0.05 + 0.9/(1+\\exp(-ax))$ 依赖于协变量 $x$。参数 $a \\in \\{0, 2, 5\\}$ 控制协变量依赖强度。我们比较三种估计器在 $n=128$ 时的性能：(1) 标准HT估计器 $\\hat{\\mu}_{HT} = \\frac{1}{n}\\sum R_i y_i / p(x_i)$；(2) 固定阈值 $C=5$ 的裁剪HT估计器 $\\hat{\\mu}_{C-HT} = \\frac{1}{n}\\sum R_i y_i \\min(1/p(x_i), C)$；(3) 自归一化Hajek估计器 $\\hat{\\mu}_{Hajek} = \\frac{\\sum R_i y_i / p(x_i)}{\\sum R_i / p(x_i)}$（若分母为0则定义为0）。评估指标为50个独立种子组下均方误差（MSE）的等权平均。通过偏差-方差分解 $MSE = Bias^2 + Variance$，我们定量分析裁剪引入的偏差与降低的方差之间的权衡。失效边界定义为裁剪HT的MSE劣于最小基线MSE的临界 $a$ 值或 $p(x)$ 分布形态。该方法无需假设缺失机制已知，仅利用观测数据 $R$ 和已知的 $p(x)$ 公式生成权重，具有严格的计算可重复性。",
+    "ablation_targets": [
+      "阈值消融：设置阈值为无穷大，验证裁剪HT估计量数值上等同于未裁剪HT估计量，确保实现正确性。",
+      "缺失机制消融：比较a=0（随机缺失近似）与a=5（强依赖）下裁剪HT的偏差-方差贡献比例变化。",
+      "样本量边界（可选扩展）：若计算允许，增加n=512组，观察MSE差异是否随n增大而收敛（HT偏差部分应消失，但固定裁剪偏差在有限样本下依然存在）。"
+    ],
+    "invariants": [
+      {
+        "quantity": "缺失概率下确界 p_min",
+        "definition": "在给定a下，函数 p(x)=0.05+0.9*sigmoid(-a*x) 在 x∈[-4,4] 上的最小值。",
+        "monotonic_effect": "p_min 越小（即a越大），未裁剪HT的方差越大。当 1/p_min > 5 时，裁剪生效；当 1/p_max <= 5 时，裁剪不生效（退化为HT）。",
+        "falsification_test": "当 a=0 时，p(x)=0.95，1/p≈1.05 < 5，裁剪HT应等价于未裁剪HT（MSE差异仅来源于采样随机性，无系统偏差）。"
+      },
+      {
+        "quantity": "Hajek Denom Zero Frequency",
+        "definition": "在50个种子中，Hajek估计器分母 sum(R_i/p(x_i)) == 0 发生的次数。",
+        "monotonic_effect": "随着 a 增大，缺失率整体可能上升（取决于x分布），分母为零概率增加。",
+        "falsification_test": "记录零分母频率。若频率>0，则Hajek估计器在部分样本上被定义为0，这会人为增大Hajek的MSE和方差，需在结果讨论中如实报告，不得将其视为估计器本身失效，而是边界条件处理结果。"
+      }
+    ],
+    "revision_response": [],
+    "consistency_audit": {
+      "protocol_version": 2,
+      "candidate_sha256": "697ed86320988051285b55c87b613dd569141f16204f62862805752f9277fbc8",
+      "initial_review": {
+        "valid": true,
+        "issues": []
+      },
+      "verification": [],
+      "valid": true,
+      "issues": []
+    }
+  },
+  "review": {
+    "scores": {
+      "novelty": {
+        "score": 4,
+        "comment": "裁剪IPW和Hajek估计器均为已知方法。创新点在于在特定小样本合成设定下系统量化了固定阈值裁剪相对于自归一化Hajek的劣势及其失效边界，属于验证性贡献而非算法发明。"
+      },
+      "technical_soundness": {
+        "score": 9,
+        "comment": "实现严谨，包含无穷阈值消融测试以验证代码正确性。配对种子设计控制了数据随机性。偏差-方差分解视角清晰。"
+      },
+      "significance": {
+        "score": 5,
+        "comment": "结论表明固定阈值裁剪在协变量依赖缺失下不如Hajek稳健，且在强依赖下可能劣于未裁剪HT。这为实践者提供了避免盲目使用固定裁剪阈值的证据，但结论在理论上并非出人意料。"
+      },
+      "clarity": {
+        "score": 8,
+        "comment": "实验合同明确，指标定义清晰。JSON输出结构化良好，便于解析。"
+      },
+      "reproducibility": {
+        "score": 10,
+        "comment": "仅依赖Python标准库，无外部数据下载，固定种子，代码随文提供，完全可复现。"
+      }
+    },
+    "overall_score": 6.5,
+    "recommendation": "weak_reject",
+    "evidence_verdict": "contradicted",
+    "claim_scope": "在n=128的合成线性模型下，固定阈值5的裁剪HT估计器未能全面优于Hajek估计器；在强协变量依赖缺失(a=5)场景下，其MSE甚至略高于未裁剪HT，假设被反驳。",
+    "strengths": [
+      "提供了透明的合成实验框架，严格控制了随机性和配对。",
+      "包含消融测试（cap=inf）验证了裁剪实现的正确性，确保其与未裁剪HT在理论上的一致。",
+      "明确量化了失效边界，指出在强依赖场景下固定阈值裁剪的偏差代价。"
+    ],
+    "weaknesses": [
+      {
+        "issue": "研究假设声称裁剪HT比Hajek更能降低MSE，但所有场景下Hajek的MSE均低于裁剪HT。",
+        "severity": "major",
+        "category": "scope",
+        "suggestion": "这是负结果，不应视为测量错误。建议在讨论中明确承认Hajek在小样本协变量依赖缺失下的优越性，并将裁剪HT定位为‘计算更简单但统计效率略低’的替代方案，而非优越方案。"
+      },
+      {
+        "issue": "失效边界分析中，a=0时CHT MSE > Hajek MSE，导致boundary_a判定为0.0，这可能误导读者认为阈值裁剪在随机缺失下就已失效（相对于Hajek）。",
+        "severity": "minor",
+        "category": "presentation",
+        "suggestion": "在报告中区分‘相对于HT的优势边界’和‘相对于Hajek的优势边界’。当前数据主要反驳了相对于Hajek的优势。"
+      },
+      {
+        "issue": "样本量n=128固定，未探索n对失效边界的影响。",
+        "severity": "minor",
+        "category": "scope",
+        "suggestion": "作为局限列出。可选建议：增加n=256, 512的场景以观察Hajek与CHT的性能差距是否随n增大而缩小。"
+      }
+    ],
+    "questions": [
+      "在a=5场景下，为何未裁剪HT的MSE(0.508)略低于裁剪HT(0.515)？理论上裁剪应减少极端权重带来的方差，是否此处偏差项主导了MSE？",
+      "Hajek估计器在零分母时返回0的处理是否人为降低了其MSE表现？在a=5时零分母频率为0，因此不影响此场景，但需确认在更极端缺失下该处理是否合理。"
+    ],
+    "revision_plan": [
+      {
+        "priority": "high",
+        "action": "修改结论部分，明确承认固定阈值5的裁剪HT在给定设定下未胜过Hajek，且在高依赖度下失效。",
+        "rationale": "证据_verdict为contradicted，论文必须如实反映负结果，避免过度声称裁剪方法的优势。"
+      },
+      {
+        "priority": "medium",
+        "action": "增加偏差-方差分解的图表或表格，展示CHT相对于HT的偏差增加和方差减少的具体数值。",
+        "rationale": "解释为何在a=5时总MSE反而上升（偏差平方 > 方差减少）。"
+      }
+    ],
+    "missing_experiments": [
+      "不同样本量n（如256, 1024）下的性能对比，以验证渐近性质。",
+      "阈值敏感性分析（如cap=2, cap=10），以探索是否存在比5更优的固定阈值。"
+    ],
+    "missing_baselines": [
+      "Trimming IPW (而非Capping) 作为另一个鲁棒化基线。",
+      "Raking或Post-stratification如果协变量离散化，也可作为比较对象。"
+    ]
+  },
+  "files": [
+    {
+      "path": "synthetic_data_harness.py",
+      "content_sha256": "933a2ba6621bebc33516bb885d64f67d55788005353dc3ad646afbe159e3bf0f"
+    },
+    {
+      "path": "estimator_suite.py",
+      "content_sha256": "510ff5b4b5970b0ba9618618390fb6a858259fb87cc0148e39beee5fbed0409d"
+    },
+    {
+      "path": "boundary_analysis.py",
+      "content_sha256": "31076b4141ea8e308e4f39a6c21f35c1c61ce33456411ab96dcb9542f3105cbc"
+    },
+    {
+      "path": "results_io.py",
+      "content_sha256": "acf2ff22377c3c5342c3f9c1024d047dcbef6ad057b57ae1b462b3a14840339f"
+    },
+    {
+      "path": "train.py",
+      "content_sha256": "64c85a85a94be11408cd31b993b63bf0cf1df7bfd6f7943e0ceefe5609af9f44"
+    }
+  ],
+  "entry_point": "train.py",
+  "dependencies": "",
+  "experiment_contract": {
+    "version": 1,
+    "primary_comparison": "primary",
+    "comparisons": [
+      {
+        "id": "primary",
+        "metric_name": "mean squared estimation error against target 1.0",
+        "definition": "Per-seed squared error (Est - 1.0)^2 for the capped HT (proposed) and un-capped HT (baseline), averaged over 50 independent trial seeds. Scenario 'a' is chosen as the active evaluation scope.",
+        "unit": "squared target units",
+        "direction": "minimize",
+        "sample_unit": "one independent trial seed",
+        "pairing": "Each seed pair provides the exact same y, R, and p data to both estimators. Only the estimator formula differs.",
+        "evaluation_scope": "Single active scenario 'a=2' (transition zone) plus aggregated equal-weighted evaluation across a in [0,2,5].",
+        "sampling_assumptions": "50 independent seeds, no temporal dependence, iid within seed.",
+        "proposed_metric": "proposed_primary",
+        "baseline_metric": "baseline_primary",
+        "samples_path": "results/primary_pairs.json"
+      },
+      {
+        "id": "secondary_hajek",
+        "metric_name": "Hajek estimator squared error",
+        "definition": "Per-seed squared error for the Hajek estimator vs target 1.0, over the same 50 seeds as the primary comparison.",
+        "unit": "squared target units",
+        "direction": "minimize",
+        "sample_unit": "one independent trial seed",
+        "pairing": "Same seed data used as primary comparison.",
+        "evaluation_scope": "Same active scenarios as primary comparison.",
+        "sampling_assumptions": "50 independent seeds.",
+        "proposed_metric": "hajek_se",
+        "baseline_metric": "baseline_primary",
+        "samples_path": "results/secondary_hajek_pairs.json"
+      },
+      {
+        "id": "ablation_cap_inf",
+        "metric_name": "Capped HT with infinite cap squared error (should equal baseline)",
+        "definition": "Per-seed squared error for the capped HT algorithm when cap=infinity (ablation), vs baseline.",
+        "unit": "squared target units",
+        "direction": "minimize",
+        "sample_unit": "one independent trial seed",
+        "pairing": "Same seed data used as primary comparison.",
+        "evaluation_scope": "Single active scenario.",
+        "sampling_assumptions": "50 independent seeds.",
+        "proposed_metric": "ablation_cap_inf",
+        "baseline_metric": "baseline_primary",
+        "samples_path": "results/ablation_cap_inf_pairs.json"
+      }
+    ]
+  },
+  "metrics": {
+    "proposed_primary": 0.17563585991030656,
+    "baseline_primary": 0.325631943581743,
+    "improvement_delta": -0.14999608367143646,
+    "sample_count": 50,
+    "hajek_se": 0.17292836916353493,
+    "ablation_cap_inf": 0.325631943581743,
+    "n": 128,
+    "cap": 5.0,
+    "aggregated_mse_ht": 0.31056390096898245,
+    "aggregated_mse_capped_ht": 0.26278768445139494,
+    "aggregated_mse_hajek": 0.18231729297863955,
+    "scenario_mse_ht_0": 0.09808806422100882,
+    "scenario_mse_ht_2": 0.3256319435817429,
+    "scenario_mse_ht_5": 0.5079716951041956,
+    "scenario_mse_cht_0": 0.09808806422100882,
+    "scenario_mse_cht_2": 0.17563585991030656,
+    "scenario_mse_cht_5": 0.5146391292228694,
+    "scenario_mse_hajek_0": 0.09119336481014254,
+    "scenario_mse_hajek_2": 0.17292836916353493,
+    "scenario_mse_hajek_5": 0.2828301449622412,
+    "scenario_bias_ht_0": 0.0451971118371155,
+    "scenario_bias_ht_2": 0.06385194151306228,
+    "scenario_bias_ht_5": 0.10607539590844461,
+    "scenario_bias_cht_0": 0.0451971118371155,
+    "scenario_bias_cht_2": -0.30872443013269857,
+    "scenario_bias_cht_5": -0.6785450168248452,
+    "scenario_var_ht_0": 0.09800539316591031,
+    "scenario_var_ht_2": 0.3281172174966892,
+    "scenario_var_ht_5": 0.5068568423337372,
+    "scenario_var_cht_0": 0.09800539316591031,
+    "scenario_var_cht_2": 0.08196437362198682,
+    "scenario_var_cht_5": 0.05532223404595901,
+    "hajek_zero_denom_freq_0": 0.0,
+    "hajek_zero_denom_freq_2": 0.0,
+    "hajek_zero_denom_freq_5": 0.0,
+    "boundary_failing_a": 0.0
+  },
+  "workflow_completed": true,
+  "original_completed_stage_count": 8,
+  "acceptance": "rejected"
+}

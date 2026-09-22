@@ -179,7 +179,8 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
                                          "candidate": output, "audit_state": pending})
 
         audit = run_audit(output, inputs.get("research_question", ""),
-                          self._call_audit, audit_state, persist_audit)
+                          self._call_audit, audit_state, persist_audit,
+                          original_direction=state.get("metadata", {}).get("research_direction", ""))
         if audit["valid"] is not True:
             blockers = [item for item in audit["issues"]
                         if item["severity"] in {"critical", "major"}]
