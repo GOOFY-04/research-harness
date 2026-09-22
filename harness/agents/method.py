@@ -52,6 +52,8 @@ class MethodAgent(BaseAgent):
 对于每个控制变量，必须核对其定义、单调方向和伪代码更新符号。经验分位数、
 指示函数等不可微算子不得被虚构为严格闭式梯度；若只能使用代理梯度、有限差分
 或渐近近似，必须如实命名并写出适用条件。
+在线或时间序列实验必须遵守因果顺序：时刻 t 的预测只能使用截至 t-1 的信息，
+输出预测后才能观测 y_t 并更新状态；不得用同一观测同时选参和评估。
 revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条对应 critical/major 问题。
 """
 
@@ -172,6 +174,8 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
 
 逐项核对：变量定义与取值范围；单调方向与更新符号；目标、约束与投影方向；
 声称的闭式梯度是否真的对所写目标求导；伪代码与文字是否一致。
+若是在线或时间序列方法，还要核对每个时刻是否先用截至 t-1 的信息输出预测，
+再观测 y_t 并更新；使用当前或未来标签选参、校准或构造同一预测属于 major 问题。
 输出 JSON：{{"valid": true|false, "issues": [{{"severity":"critical|major|minor",
 "invariant":"被违反的不变量", "contradiction":"具体矛盾", "repair":"最小修复"}}]}}。
 只要存在 critical 或 major 内部矛盾，valid 必须为 false。最多返回 4 个问题，
