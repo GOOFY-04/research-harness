@@ -27,6 +27,7 @@ if __package__ in (None, ""):
 from harness.acceptance import evaluate_session
 from harness.core.checkpoint import CheckpointManager
 from harness.core.workflow import WorkflowEngine
+from harness.agents.method import MethodAgent
 
 
 STAGES = ["planning", "literature", "method_design", "coding", "code_execution",
@@ -140,17 +141,68 @@ def evidence_ablation(root: Path) -> dict:
     }
 
 
+def audit_recovery_ablation(root: Path) -> dict:
+    """Fixed model replies isolate recovery cost, not model reasoning accuracy."""
+    candidate = {
+        "method_name": "Monotone", "overview": "A linear reference", "components": [],
+        "algorithm": "f(x) = 2*x", "method_section_draft": "f increases on the real line",
+        "revision_response": ["Specify domain and direction"],
+        "invariants": [{"quantity": "x", "definition": "real-valued input",
+                        "monotonic_effect": "f increases with x",
+                        "falsification_test": "compare x=0 and x=1"}],
+    }
+    critique = {"valid": False, "issues": [{"severity": "major", "invariant": "monotonicity",
+        "contradiction": "f decreases with x", "repair": "reverse the sign"}]}
+    verification = {"decisions": [{"issue_index": 0, "decision": "dismissed",
+        "candidate_quote": "f(x) = 2*x", "reason": "f(0)=0 and f(1)=2; slope 2 is positive"}]}
+
+    def run(path, replies, calls):
+        agent = MethodAgent()
+        iterator = iter(replies)
+
+        def respond(prompt):
+            calls.append(prompt)
+            reply = next(iterator)
+            if isinstance(reply, Exception):
+                raise reply
+            return json.dumps(reply)
+
+        agent._call_llm = respond
+        return agent.run("method_design", {"review_feedback": {"weaknesses": []}},
+                         {"session_dir": str(path)})
+
+    prefix = []
+    try:
+        run(root / "resume", [candidate, critique, TimeoutError("injected verification timeout")], prefix)
+    except TimeoutError:
+        pass
+    resumed_calls, restart_calls = [], []
+    resumed = run(root / "resume", [verification], resumed_calls)
+    restarted = run(root / "restart", [candidate, critique, verification], restart_calls)
+    return {
+        "scope": "fixed-response audit recovery; no estimate of LLM false-positive rate",
+        "initial_requests": len(prefix),
+        "additional_model_requests": {"durable_resume": len(resumed_calls), "stateless_restart": len(restart_calls)},
+        "same_final_output": resumed == restarted,
+        "candidate_unchanged": resumed["algorithm"] == candidate["algorithm"],
+        "criticism_preserved": resumed["consistency_audit"]["initial_review"] == critique,
+        "verified_decision": resumed["consistency_audit"]["verification"][0]["decision"],
+    }
+
+
 def run_benchmark() -> dict:
     with tempfile.TemporaryDirectory(prefix="research_harness_ablation_") as directory:
         root = Path(directory)
         recovery = recovery_ablation(root / "recovery")
         evidence = evidence_ablation(root / "evidence")
+        audit = audit_recovery_ablation(root / "audit")
     return {
         "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": "deterministic harness mechanism ablation; not a research-quality benchmark",
         "recovery_ablation": recovery,
         "evidence_gate_ablation": evidence,
+        "method_audit_recovery_ablation": audit,
     }
 
 

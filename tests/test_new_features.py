@@ -232,7 +232,7 @@ def test_method_revision_prompt_requires_concrete_review_repairs():
     assert '"invariants"' in prompt and "单调方向" in prompt
     assert "revision_response 必须至少包含 1 条" in prompt
     assert "时刻 t 的预测只能使用截至 t-1 的信息" in prompt
-    assert "保守回退选最小 alpha" in prompt
+    assert "分别检查优化目标与安全回退的方向" in prompt
 
     with pytest.raises(ValueError, match="revision_response"):
         MethodAgent().parse_output(json.dumps({"method_name": "Changed"}), "method_design", {
@@ -253,7 +253,8 @@ def test_revised_method_runs_consistency_audit_before_coding(monkeypatch):
         "valid": False, "issues": [{"severity": "critical", "invariant": "direction",
                                       "contradiction": "update sign expands instead of narrows",
                                       "repair": "reverse the sign"}],
-    })])
+    }), json.dumps({"decisions": [{"issue_index": 0, "decision": "confirmed",
+        "candidate_quote": "theta += 1", "reason": "theta=1 becomes 2, outside [0,1]"}]})])
     prompts = []
     monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or next(replies))
     with pytest.raises(ValueError, match="update sign"):
@@ -261,7 +262,7 @@ def test_revised_method_runs_consistency_audit_before_coding(monkeypatch):
             "weaknesses": [{"severity": "critical", "issue": "wrong direction"}],
         }}, {})
     assert "使用当前或未来标签选参" in prompts[1]
-    assert "最窄的可行解应选满足覆盖约束的最大 alpha" in prompts[1]
+    assert "独立复核" in prompts[2]
 
 
 def test_revised_method_reuses_candidate_after_audit_timeout(tmp_path, monkeypatch):
@@ -296,7 +297,8 @@ def test_revised_method_reuses_candidate_after_audit_timeout(tmp_path, monkeypat
     output = agent.run("method_design", inputs, state)
     assert len(prompts) == 1
     assert "一致性审计员" in prompts[0]
-    assert output["consistency_audit"] == {"valid": True, "issues": []}
+    assert output["consistency_audit"]["valid"] is True
+    assert output["consistency_audit"]["issues"] == []
 
 
 def test_revised_method_feeds_failed_audit_into_next_candidate(tmp_path, monkeypatch):
@@ -316,7 +318,8 @@ def test_revised_method_feeds_failed_audit_into_next_candidate(tmp_path, monkeyp
         "valid": False, "issues": [{"severity": "critical", "invariant": "direction",
                                       "contradiction": "update sign is reversed",
                                       "repair": "reverse the sign"}],
-    })])
+    }), json.dumps({"decisions": [{"issue_index": 0, "decision": "confirmed",
+        "candidate_quote": "theta += grad", "reason": "positive grad increases theta"}]})])
     monkeypatch.setattr(agent, "_call_llm", lambda prompt: next(replies))
     with pytest.raises(ValueError, match="update sign is reversed"):
         agent.run("method_design", inputs, state)

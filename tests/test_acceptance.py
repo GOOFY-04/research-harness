@@ -128,3 +128,22 @@ def test_revision_requires_traceable_history_and_method_response(tmp_path):
     }
     report = evaluate_session(tmp_path, state, STAGES)
     assert "trace:revision-lineage" not in report["failed_required_checks"]
+
+
+def test_acceptance_detects_method_changes_after_audit(tmp_path):
+    from harness.agents.method_audit import candidate_digest
+
+    state = completed_state()
+    method = {"algorithm": "predict then update", "revision_response": ["fixed leakage"]}
+    method["consistency_audit"] = {
+        "protocol_version": 2, "candidate_sha256": candidate_digest(method),
+        "initial_review": {"valid": True, "issues": []}, "verification": [],
+        "valid": True, "issues": [],
+    }
+    state["stages"]["method_design"]["output"] = method
+    state["metadata"].update(revision_round=1, revision_history=[{"round": 1}])
+    export_fixture(tmp_path, state)
+    assert evaluate_session(tmp_path, state, STAGES)["decision"] == "accepted"
+    method["algorithm"] = "update then predict"
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "trace:revision-lineage" in report["failed_required_checks"]

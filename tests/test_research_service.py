@@ -116,6 +116,11 @@ def test_snapshot_exposes_pending_method_audit(service):
 
     view = service.handle({"action": "status", "session": "study"})
     assert view["method_draft_progress"] == {"candidate_ready": True, "audit_pending": True}
+    draft.write_text(json.dumps({"candidate": {"method_name": "M"},
+                                "audit_state": {"initial_review": {"valid": False, "issues": []}}}),
+                     encoding="utf-8")
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["method_draft_progress"]["verification_pending"] is True
 
 
 def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(service):

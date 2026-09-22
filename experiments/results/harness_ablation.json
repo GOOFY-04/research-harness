@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-22T04:41:46.025751+00:00",
+  "generated_at": "2026-09-22T06:33:23.017835+00:00",
   "scope": "deterministic harness mechanism ablation; not a research-quality benchmark",
   "recovery_ablation": {
     "same_failed_prefix": true,
@@ -29,5 +29,17 @@
       "review:evidence-verdict",
       "review:no-validity-blockers"
     ]
+  },
+  "method_audit_recovery_ablation": {
+    "scope": "fixed-response audit recovery; no estimate of LLM false-positive rate",
+    "initial_requests": 3,
+    "additional_model_requests": {
+      "durable_resume": 1,
+      "stateless_restart": 3
+    },
+    "same_final_output": true,
+    "candidate_unchanged": true,
+    "criticism_preserved": true,
+    "verified_decision": "dismissed"
   }
 }

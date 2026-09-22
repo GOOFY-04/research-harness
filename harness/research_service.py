@@ -118,6 +118,9 @@ class ResearchService:
                         "candidate_ready": isinstance(draft.get("candidate"), dict),
                         "audit_pending": True,
                     }
+                    audit_state = draft.get("audit_state", {})
+                    if isinstance(audit_state, dict) and audit_state.get("initial_review"):
+                        method_draft_progress["verification_pending"] = "verification" not in audit_state
             except (OSError, ValueError, TypeError, KeyError):
                 pass
         if state.get("current_stage") == "coding" and draft_dir.is_dir():

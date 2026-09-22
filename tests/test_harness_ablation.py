@@ -18,3 +18,7 @@ def test_harness_mechanism_ablation_is_reproducible():
     assert evidence["naive_completed_gate_accepts_weak_review"]
     assert not evidence["strict_gate_accepts_weak_review"]
     assert evidence["review_checks"] == ["review:evidence-verdict", "review:no-validity-blockers"]
+    audit = result["method_audit_recovery_ablation"]
+    assert audit["additional_model_requests"] == {"durable_resume": 1, "stateless_restart": 3}
+    assert audit["same_final_output"] and audit["candidate_unchanged"]
+    assert audit["criticism_preserved"] and audit["verified_decision"] == "dismissed"

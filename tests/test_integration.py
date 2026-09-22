@@ -39,6 +39,7 @@ def test_default_eight_stage_cli_run_resume_and_reset(tmp_path, monkeypatch):
         }
         for name, output in fixed.items():
             monkeypatch.setattr(agents[name], "_call_llm", lambda prompt, output=output: json.dumps(output))
+        monkeypatch.setattr(agents["method"], "_call_audit", lambda prompt: {"valid": True, "issues": []})
         manifest = {"files":[{"path":"main.py","description":"entry","interface":"def identity(x)"}],
                     "entry_point":"main.py","dependencies":"","run_instructions":"python main.py"}
         coder = iter([json.dumps(manifest), "def identity(x): return x",

@@ -1,0 +1,81 @@
+{
+  "scope": "four hand-authored sanity cases; not a benchmark of research quality",
+  "expected": [
+    {
+      "id": "causal_next_step",
+      "valid": true,
+      "algorithm": "At t, output interval C_t from H_(t-1). Then observe y_t, update H_t, and choose alpha_next for the interval at t+1."
+    },
+    {
+      "id": "current_label_leak",
+      "valid": false,
+      "algorithm": "At t, observe y_t, append residual |y_t - prediction_t| to H, calibrate q from H, and report [prediction_t-q, prediction_t+q] for the same t as an out-of-sample interval."
+    },
+    {
+      "id": "conservative_fallback",
+      "valid": true,
+      "algorithm": "alpha is miscoverage; interval radius is Q(1-alpha) for the same fixed residual list. When no candidate is feasible, use the smallest alpha in the grid to obtain the widest candidate interval. No coverage guarantee is claimed."
+    },
+    {
+      "id": "inverted_fallback",
+      "valid": false,
+      "algorithm": "alpha is miscoverage; interval radius is Q(1-alpha) for the same fixed residual list. Use the largest alpha in the grid and claim this gives the widest candidate interval."
+    }
+  ],
+  "results": [
+    {
+      "model": "agnes-3.0-flash",
+      "answers": [
+        {
+          "id": "causal_next_step",
+          "valid": true,
+          "reason": "Input H_(t-1) precedes y_t; update uses y_t for future alpha_next at t+1, no leakage."
+        },
+        {
+          "id": "current_label_leak",
+          "valid": false,
+          "reason": "Residual uses y_t before interval calculation at same t, causing label leakage."
+        },
+        {
+          "id": "conservative_fallback",
+          "valid": true,
+          "reason": "Smallest alpha implies largest (1-alpha), yielding widest quantile interval logically."
+        },
+        {
+          "id": "inverted_fallback",
+          "valid": false,
+          "reason": "Largest alpha implies smallest (1-alpha), yielding narrowest quantile interval, contradicting claim."
+        }
+      ],
+      "correct": 4,
+      "elapsed_seconds": 6.76
+    },
+    {
+      "model": "agnes-2.5-pro",
+      "answers": [
+        {
+          "id": "causal_next_step",
+          "valid": true,
+          "reason": "C_t uses H_(t-1); y_t enters H_t only after C_t."
+        },
+        {
+          "id": "current_label_leak",
+          "valid": false,
+          "reason": "y_t is used in H before reporting the interval at the same t."
+        },
+        {
+          "id": "conservative_fallback",
+          "valid": true,
+          "reason": "Smallest alpha gives largest 1-alpha and widest Q(1-alpha)."
+        },
+        {
+          "id": "inverted_fallback",
+          "valid": false,
+          "reason": "Largest alpha gives smallest 1-alpha and narrower Q(1-alpha)."
+        }
+      ],
+      "correct": 4,
+      "elapsed_seconds": 2.95
+    }
+  ]
+}

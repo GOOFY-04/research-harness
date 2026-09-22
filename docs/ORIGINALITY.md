@@ -35,9 +35,12 @@ six mechanisms around a research checkpoint:
    section. Provider timeouts, truncated responses, and invalid LaTeX resume at
    the missing item; the UI projects the same persisted progress.
 6. Review-guided revisions preserve lineage from criticism to method response.
-   Revised methods must state falsifiable invariants and pass a separate internal
+   Newly generated methods must state falsifiable invariants and pass a separate internal
    consistency audit before expensive code generation; executed comparison
    metrics then pass key, bound, and arithmetic checks before writing.
+   Blocking audit findings receive a separate, candidate-quoted verification;
+   unresolved findings retain the candidate, while confirmed failures archive
+   the candidate and both reviews. These are model judgments, not formal proofs.
 
 The defensible claim is this integrated evidence contract and its observable
 failure behavior. We do not claim invention of autonomous research, multi-agent
@@ -59,8 +62,25 @@ while either tampering with an exported file or inserting a weak review. A
 status-only gate accepts both packages, while the strict gate rejects them and
 names the violated checks.
 
-This experiment validates the stage-level recovery and deterministic evidence
-gate mechanics. Item-level draft recovery, revision audits, and real-model cost
+The audit recovery comparison interrupts verification after candidate generation
+and initial review. With identical fixed model responses, durable resume makes
+one additional request and stateless restart makes three, producing identical
+final records. The fixture retains a deliberately incorrect criticism and its
+quoted dismissal; it does not measure real-model false-positive rates.
+
+This experiment validates the stage-level and audit-substep recovery and deterministic
+evidence gate mechanics. Source/paper draft recovery and real-model cost
 still require separate logged evaluations. It does not establish better research
 quality or uniqueness across the entire open source ecosystem; those claims
 require multi-project benchmarks and more than one real research run.
+
+The optional live sanity probe can be repeated with the configured provider:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.audit_model_probe --models agnes-3.0-flash agnes-2.5-pro --output experiments/results/audit_model_probe.json
+```
+
+It consumes API usage and covers only four hand-authored causal-order and
+quantile-direction cases. Both models answered four out of four in the recorded
+run, despite errors observed in longer research contexts. That small result
+does not justify claiming general reviewer reliability or model superiority.

@@ -12,10 +12,11 @@ MethodAgent — 方法设计
 
 import json
 import hashlib
-import re
+import logging
 
 from harness.core.agent import BaseAgent
-from harness.core.io import atomic_json, safe_path
+from harness.core.io import atomic_json, safe_path, OutputValidationError
+from harness.agents.method_audit import run_audit, candidate_digest, verify_record
 
 
 class MethodAgent(BaseAgent):
@@ -54,15 +55,14 @@ class MethodAgent(BaseAgent):
 或渐近近似，必须如实命名并写出适用条件。
 在线或时间序列实验必须遵守因果顺序：时刻 t 的预测只能使用截至 t-1 的信息，
 输出预测后才能观测 y_t 并更新状态；不得用同一观测同时选参和评估。
-若 alpha 定义为保形预测的误覆盖率且 q=Q_(1-alpha)，必须区分两种方向：
-alpha 越小，q 和宽度越大、越保守；无可行解时的保守回退选最小 alpha，
-满足覆盖约束后追求最窄区间则选可行集合中的最大 alpha。
+根据变量的精确定义给出具体数值或边界例子，分别检查优化目标与安全回退的方向。
 revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条对应 critical/major 问题。
 """
 
         return f"""请为以下研究问题设计一个创新性方法。
 
 研究问题：{rq}
+原始研究约束：{state.get('metadata', {}).get('research_direction', '')}
 
 已识别的研究空白：
 {json.dumps(gaps, ensure_ascii=False, indent=2)}
@@ -105,14 +105,14 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
 }}"""
 
     def run(self, stage_id: str, inputs: dict, state: dict) -> dict:
-        """Audit revised designs before expensive code generation begins."""
+        """Audit every new design before expensive code generation begins."""
         prompt = self.build_prompt(stage_id, inputs, state)
-        revision = isinstance(inputs.get("review_feedback"), dict)
         draft_path = None
         feedback_path = None
         context_digest = None
         output = None
-        if revision and state.get("session_dir"):
+        audit_state = {}
+        if state.get("session_dir"):
             context_digest = hashlib.sha256(("method-audit-v1\n" + prompt).encode("utf-8")).hexdigest()
             draft_path = safe_path(state["session_dir"],
                                    f".drafts/method_{context_digest[:20]}.json")
@@ -125,6 +125,9 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
                     if saved.get("context_sha256") == context_digest and isinstance(candidate, dict):
                         self._validate_candidate(candidate)
                         output = candidate
+                        audit_state = saved.get("audit_state", {})
+                        if not isinstance(audit_state, dict):
+                            audit_state = {}
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     output = None
             feedback_issues = []
@@ -148,7 +151,8 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
             if output is None and feedback_issues:
                 prompt += f"""
 
-上一候选被独立一致性审计拒绝。重新设计时必须逐项修复以下问题，不能仅改写表述：
+上一候选被独立一致性审计拒绝。以下为待处理意见，先按变量定义和数值例子核实，
+修复成立的问题；若意见本身错误，在设计中写出反例与依据，不能盲目反转正确逻辑：
 {json.dumps(feedback_issues, ensure_ascii=False)[:4000]}
 """
             audit_failures = sum(1 for error in prior_errors if isinstance(error, str)
@@ -168,55 +172,46 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
                 atomic_json(draft_path, {"schema_version": 1, "context_sha256": context_digest,
                                          "candidate": output})
         else:
-            import logging
             logging.info("[MethodAgent] resuming validated method candidate; audit pending")
-        if revision:
-            audit_prompt = f"""你是方法一致性审计员。只检查内部数学与算法一致性，不评价新颖性。
-研究问题：{inputs.get('research_question', '')}
-候选方法：{json.dumps(output, ensure_ascii=False)}
+        def persist_audit(pending):
+            if draft_path is not None:
+                atomic_json(draft_path, {"schema_version": 2, "context_sha256": context_digest,
+                                         "candidate": output, "audit_state": pending})
 
-逐项核对：变量定义与取值范围；单调方向与更新符号；目标、约束与投影方向；
-声称的闭式梯度是否真的对所写目标求导；伪代码与文字是否一致。
-若是在线或时间序列方法，还要核对每个时刻是否先用截至 t-1 的信息输出预测，
-再观测 y_t 并更新；使用当前或未来标签选参、校准或构造同一预测属于 major 问题。
-若 alpha 是误覆盖率且 q=Q_(1-alpha)，alpha 减小会使 q 与宽度增大；最保守
-回退应选最小 alpha，最窄的可行解应选满足覆盖约束的最大 alpha，不得混淆。
-输出 JSON：{{"valid": true|false, "issues": [{{"severity":"critical|major|minor",
-"invariant":"被违反的不变量", "contradiction":"具体矛盾", "repair":"最小修复"}}]}}。
-只要存在 critical 或 major 内部矛盾，valid 必须为 false。最多返回 4 个问题，
-每个字符串字段不超过 80 个汉字；不要输出推理过程、Markdown 或额外字段。"""
-            previous_tokens, previous_thinking = self.max_tokens, self.use_extended_thinking
-            try:
-                self.max_tokens = 1536
-                self.use_extended_thinking = False
-                audit = self._parse_json(self._call_llm(audit_prompt))
-            finally:
-                self.max_tokens, self.use_extended_thinking = previous_tokens, previous_thinking
-            issues = audit.get("issues") if isinstance(audit, dict) else None
-            blockers = [item for item in issues or [] if isinstance(item, dict)
-                        and item.get("severity") in {"critical", "major"}]
-            if (audit.get("parse_error") or not isinstance(audit.get("valid"), bool)
-                    or not isinstance(issues, list) or audit.get("valid") is not True or blockers):
-                summary = "; ".join(str(item.get("contradiction", ""))[:240]
-                                    for item in blockers[:3])
-                if draft_path is not None:
-                    draft_path.unlink(missing_ok=True)
-                if feedback_path is not None and isinstance(issues, list) and issues:
-                    atomic_json(feedback_path, {
-                        "schema_version": 1,
-                        "context_sha256": context_digest,
-                        "issues": issues[:4],
-                    })
-                raise ValueError("Method consistency audit failed"
-                                 + (f": {summary}" if summary else ""))
-            output["consistency_audit"] = audit
+        audit = run_audit(output, inputs.get("research_question", ""),
+                          self._call_audit, audit_state, persist_audit)
+        if audit["valid"] is not True:
+            blockers = [item for item in audit["issues"]
+                        if item["severity"] in {"critical", "major"}]
+            if draft_path is not None:
+                archive = safe_path(state["session_dir"],
+                                    f".audits/method_{context_digest[:20]}_{candidate_digest(output)[:20]}.json")
+                atomic_json(archive, {"candidate": output, "audit": audit})
             if feedback_path is not None:
-                feedback_path.unlink(missing_ok=True)
+                atomic_json(feedback_path, {"schema_version": 2, "context_sha256": context_digest,
+                                            "issues": blockers})
+            if draft_path is not None:
+                draft_path.unlink(missing_ok=True)
+            summary = "; ".join(item["contradiction"][:240] for item in blockers[:3])
+            raise OutputValidationError("Method consistency audit failed: " + summary,
+                                        {"candidate": output, "consistency_audit": audit})
+        output["consistency_audit"] = audit
+        if feedback_path is not None:
+            feedback_path.unlink(missing_ok=True)
         self.validate_output(output)
         if self.memory:
             self.memory.append(stage_id, {"inputs": inputs, "output": output},
                                [self.__class__.__name__, stage_id])
         return output
+
+    def _call_audit(self, prompt):
+        previous_tokens, previous_thinking = self.max_tokens, self.use_extended_thinking
+        try:
+            self.max_tokens = 2048
+            self.use_extended_thinking = False
+            return self._parse_json(self._call_llm(prompt))
+        finally:
+            self.max_tokens, self.use_extended_thinking = previous_tokens, previous_thinking
 
     def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:
         output = self._parse_json(raw_text)
@@ -232,10 +227,12 @@ revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条
 
     def validate_output(self, output: dict) -> None:
         self._validate_candidate(output)
-        if output.get("revision_response"):
+        if output.get("revision_response") or "consistency_audit" in output:
             audit = output.get("consistency_audit")
             if not isinstance(audit, dict) or audit.get("valid") is not True:
                 raise ValueError("Revised method is missing a passing consistency audit")
+            if "protocol_version" in audit:
+                verify_record(output, audit)
 
     def _validate_candidate(self, output: dict) -> None:
         BaseAgent.validate_output(self, output)

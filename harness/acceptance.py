@@ -15,6 +15,7 @@ from typing import Any
 
 from .core.io import safe_path
 from .tools.validation import comparison_metric_errors
+from .agents.method_audit import verify_record
 
 
 APPROVED_RECOMMENDATIONS = {"accept", "weak_accept"}
@@ -164,8 +165,15 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     method_output = stages.get("method_design", {}).get("output", {})
     revision_response = method_output.get("revision_response") if isinstance(method_output, dict) else None
     consistency_audit = method_output.get("consistency_audit") if isinstance(method_output, dict) else None
+    audit_trace_ok = True
+    if isinstance(consistency_audit, dict) and "protocol_version" in consistency_audit:
+        try:
+            verify_record(method_output, consistency_audit)
+        except (ValueError, TypeError, KeyError):
+            audit_trace_ok = False
     revision_trace_ok = (
         isinstance(revision_round, int) and revision_round >= 0
+        and audit_trace_ok
         and isinstance(revision_history, list) and len(revision_history) == revision_round
         and (revision_round == 0 or isinstance(revision_response, list) and bool(revision_response)
              and isinstance(consistency_audit, dict) and consistency_audit.get("valid") is True)
