@@ -315,6 +315,30 @@ def test_revised_method_feeds_failed_audit_into_next_candidate(tmp_path, monkeyp
     assert not list((tmp_path / ".drafts").glob("audit_feedback_*.json"))
 
 
+def test_revised_method_recovers_audit_feedback_from_checkpoint(tmp_path, monkeypatch):
+    agent = MethodAgent()
+    method = {
+        "method_name": "M", "overview": "O", "components": [], "algorithm": "theta -= grad",
+        "method_section_draft": "Draft", "revision_response": ["fixed direction"],
+        "invariants": [{"quantity": "theta", "definition": "theta in [0, 1]",
+                        "monotonic_effect": "larger theta narrows the interval",
+                        "falsification_test": "compare widths at theta=0 and theta=1"}],
+    }
+    prompts = []
+    replies = iter([json.dumps(method), json.dumps({"valid": True, "issues": []})])
+    monkeypatch.setattr(agent, "_call_llm",
+                        lambda prompt: prompts.append(prompt) or next(replies))
+    agent.run("method_design", {"review_feedback": {"weaknesses": [
+        {"severity": "major", "issue": "wrong direction"},
+    ]}}, {"session_dir": str(tmp_path), "stages": {"method_design": {"errors": [
+        "The read operation timed out",
+        "Method consistency audit failed: update sign is reversed",
+    ]}}})
+
+    assert "上一候选被独立一致性审计拒绝" in prompts[0]
+    assert "update sign is reversed" in prompts[0]
+
+
 def test_dependency_missing(monkeypatch):
     from harness.skills import dependency_check
     def missing(name):

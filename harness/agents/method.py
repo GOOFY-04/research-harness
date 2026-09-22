@@ -118,19 +118,30 @@ class MethodAgent(BaseAgent):
                         output = candidate
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     output = None
+            feedback_issues = []
             if output is None and feedback_path.is_file():
                 try:
                     saved_feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
                     issues = saved_feedback.get("issues")
                     if (saved_feedback.get("context_sha256") == context_digest
                             and isinstance(issues, list) and issues):
-                        prompt += f"""
-
-上一候选被独立一致性审计拒绝。重新设计时必须逐项修复以下问题，不能仅改写表述：
-{json.dumps(issues, ensure_ascii=False)[:4000]}
-"""
+                        feedback_issues = issues
                 except (OSError, TypeError, json.JSONDecodeError):
                     pass
+            if output is None and not feedback_issues:
+                prior_errors = state.get("stages", {}).get(stage_id, {}).get("errors", [])
+                last_audit_error = next((error for error in reversed(prior_errors)
+                                         if isinstance(error, str)
+                                         and error.startswith("Method consistency audit failed")), None)
+                if last_audit_error:
+                    feedback_issues = [{"severity": "major",
+                                        "contradiction": last_audit_error[:4000]}]
+            if output is None and feedback_issues:
+                prompt += f"""
+
+上一候选被独立一致性审计拒绝。重新设计时必须逐项修复以下问题，不能仅改写表述：
+{json.dumps(feedback_issues, ensure_ascii=False)[:4000]}
+"""
         if output is None:
             output = self.parse_output(self._call_llm(prompt), stage_id, inputs)
             self._validate_candidate(output)
