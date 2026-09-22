@@ -56,6 +56,11 @@ def test_full_experiment_requires_machine_readable_metrics():
     assert agents["executor"].run_entry_point is True
     assert agents["executor"].require_metrics is True
     assert agents["executor"].timeout == 180
+    assert agents["executor"].required_metric_keys == [
+        "proposed_primary", "baseline_primary", "improvement_delta", "sample_count",
+    ]
+    assert agents["executor"].metric_constraints == {"sample_count": {"min": 30}}
+    assert agents["coder"].required_metric_keys == agents["executor"].required_metric_keys
     assert Path(agents["executor"].python_executable).name.lower() == "python.exe"
 
 
@@ -101,3 +106,72 @@ def test_export_requirements_and_references(tmp_path):
     assert (cp.session_dir/"code/requirements.txt").read_text() == "numpy>=1"
     assert (cp.session_dir/"output/references.bib").read_text().startswith("@misc")
     assert (cp.session_dir/"README.md").read_text() == "# Project"
+
+
+def test_archiving_invalidated_coding_removes_resumable_drafts(tmp_path):
+    cp = CheckpointManager(tmp_path, "draft-archive")
+    draft = cp.session_dir / ".drafts" / "coding_context.json"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("{}", encoding="utf-8")
+
+    main.archive_artifacts(cp, {"coding"}, include_drafts=True)
+
+    assert not draft.exists()
+    assert list((cp.session_dir / "history").glob("*/.drafts/coding_context.json"))
+
+
+def test_archiving_invalidated_paper_removes_resumable_drafts(tmp_path):
+    cp = CheckpointManager(tmp_path, "paper-draft-archive")
+    draft = cp.session_dir / ".drafts" / "paper_context.json"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("{}", encoding="utf-8")
+
+    main.archive_artifacts(cp, {"paper_writing"}, include_drafts=True)
+
+    assert not draft.exists()
+    assert list((cp.session_dir / "history").glob("*/.drafts/paper_context.json"))
+
+
+def test_revise_archives_review_and_injects_feedback_before_resume(tmp_path, monkeypatch):
+    cfg = config(tmp_path)
+    cfg["workflow"]["default"] = str(main.ROOT / "workflows" / "research.yaml")
+    cp = CheckpointManager(cfg["paths"]["sessions_dir"], "revision")
+    state = cp.new_state()
+    state.update(status="completed", workflow_path=cfg["workflow"]["default"], metadata={})
+    state["stages"] = {
+        "method_design": {"status": "done", "output": {"method_name": "Old"}},
+        "coding": {"status": "done", "output": {"files": []}},
+        "code_execution": {"status": "done", "output": {
+            "execution_kind": "entry_point", "analysis": {"metrics": {"score": 0.1}},
+            "execution_policy": {"required_metric_keys": ["score"]},
+        }},
+        "self_review": {"status": "done", "output": {
+            "recommendation": "weak_reject",
+            "weaknesses": [{"severity": "major", "issue": "invalid baseline"}],
+            "revision_plan": [{"priority": "high", "action": "fix baseline"}],
+            "missing_experiments": ["ablation"], "missing_baselines": ["strong baseline"],
+        }},
+        "paper_writing": {"status": "done", "output": {}},
+        "documentation": {"status": "done", "output": {}},
+    }
+    state["completed_stages"] = list(state["stages"])
+    cp.save(state)
+    observed = {}
+
+    def resume(args, config):
+        current = cp.load()
+        observed.update(current)
+        assert args.resume is True and args.no_resume is False and args.direction is None
+        return 7
+
+    monkeypatch.setattr(main, "cmd_run", resume)
+    result = main.cmd_revise(Namespace(session="revision", workflow=None), cfg)
+
+    assert result == 7
+    assert "method_design" not in observed["stages"]
+    feedback = observed["stage_inputs_override"]["method_design"]
+    assert feedback["review_feedback"]["recommendation"] == "weak_reject"
+    assert feedback["previous_method"] == {"method_name": "Old"}
+    assert feedback["previous_execution"]["analysis"]["metrics"] == {"score": 0.1}
+    assert observed["metadata"]["revision_round"] == 1
+    assert observed["metadata"]["revision_history"][0]["major_issues"] == ["invalid baseline"]

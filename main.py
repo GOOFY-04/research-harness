@@ -80,9 +80,14 @@ def build_agent_registry(config, memory):
             if key in cfg:
                 options[key] = cfg[key]
         if name in ("coder", "executor"):
+            # The generator must see the same executable evidence contract that
+            # the executor will enforce. Explicit Coder values may narrow or
+            # override it; otherwise inherit the Executor policy.
+            policy = ({**settings.get("executor", {}), **cfg}
+                      if name == "coder" else cfg)
             for key in ("allowed_dependencies", "required_metric_keys", "metric_constraints"):
-                if key in cfg:
-                    options[key] = cfg[key]
+                if key in policy:
+                    options[key] = policy[key]
         if name == "executor":
             for key in ("timeout", "install_dependencies", "run_entry_point", "entry_args",
                         "enable_code_review", "require_metrics", "python_executable"):
@@ -124,7 +129,7 @@ def existing_session(args, config):
     return cp, cp.load()
 
 
-def archive_artifacts(cp, stage_ids, include_checkpoint=False):
+def archive_artifacts(cp, stage_ids, include_checkpoint=False, include_drafts=False):
     targets = set()
     if "coding" in stage_ids:
         targets.add("code")
@@ -132,6 +137,8 @@ def archive_artifacts(cp, stage_ids, include_checkpoint=False):
         targets.add("output")
     if "documentation" in stage_ids:
         targets.add("README.md")
+    if include_drafts:
+        targets.add(".drafts")
     if include_checkpoint:
         targets.add("checkpoint.json")
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -184,7 +191,8 @@ def cmd_run(args, config):
     agents["executor"].skill_registry = skills
     engine = WorkflowEngine(workflow_for(args, config, previous if resume else {}), cp, agents, skills)
     if not resume and cp.checkpoint_file.exists():
-        archive_artifacts(cp, {"coding", "paper_writing", "documentation"}, include_checkpoint=True)
+        archive_artifacts(cp, {"coding", "paper_writing", "documentation"},
+                          include_checkpoint=True, include_drafts=True)
     elif cp.checkpoint_file.exists():
         archive_artifacts(cp, set(), include_checkpoint=True)
     override = {"planning": {"research_direction": direction}} if direction else None
@@ -193,7 +201,9 @@ def cmd_run(args, config):
     engine.status(final)
     changed = {sid for sid in ("coding", "paper_writing", "documentation")
                if previous.get("stages", {}).get(sid) != final.get("stages", {}).get(sid)}
-    archive_artifacts(cp, changed)
+    completed_draft_stage = any(stage in changed and cp.is_stage_done(final, stage)
+                                for stage in ("coding", "paper_writing"))
+    archive_artifacts(cp, changed, include_drafts=completed_draft_stage)
     export_artifacts(cp, final)
     acceptance = evaluate_session(cp.session_dir, final, [stage.id for stage in engine.spec.stages])
     report_path = write_report(cp.session_dir, acceptance)
@@ -222,7 +232,8 @@ def cmd_reset_stage(args, config):
     for stage in args.stages:
         cp.reset_stage(state, stage)
     invalidated = (before - set(state["stages"])) | set(args.stages)
-    archive_artifacts(cp, invalidated)
+    archive_artifacts(cp, invalidated,
+                      include_drafts=bool({"coding", "paper_writing"} & invalidated))
     print(f"Reset stages and consumers: {', '.join(sorted(invalidated))}")
     return 0
 
@@ -255,6 +266,62 @@ def cmd_repair(args, config):
     export_artifacts(cp, state)
     print(f"Repaired: {repaired}; still invalid: {remaining}")
     return 1 if remaining else 0
+
+
+def cmd_revise(args, config):
+    """Archive rejected evidence and run a review-guided method revision."""
+    cp, state = existing_session(args, config)
+    engine = WorkflowEngine(workflow_for(args, config, state), cp, {})
+    state["stage_dependencies"] = {stage.id: stage.depends_on for stage in engine.spec.stages}
+    if "method_design" not in state["stage_dependencies"] or "self_review" not in state["stage_dependencies"]:
+        raise ValueError("Revision requires method_design and self_review stages")
+    review = cp.get_stage_output(state, "self_review")
+    if not isinstance(review, dict):
+        raise ValueError("Revision requires a completed self_review output")
+    recommendation = review.get("recommendation")
+    if recommendation in ("accept", "weak_accept"):
+        raise ValueError(f"Review is already {recommendation}; revision is not required")
+    method = cp.get_stage_output(state, "method_design")
+    execution = cp.get_stage_output(state, "code_execution")
+    feedback = {
+        "recommendation": recommendation,
+        "weaknesses": review.get("weaknesses", []),
+        "revision_plan": review.get("revision_plan", []),
+        "missing_experiments": review.get("missing_experiments", []),
+        "missing_baselines": review.get("missing_baselines", []),
+    }
+    archive_artifacts(cp, set(), include_checkpoint=True)
+    before = set(state["stages"])
+    cp.reset_stage(state, "method_design")
+    invalidated = (before - set(state["stages"])) | {"method_design"}
+    archive_artifacts(cp, invalidated,
+                      include_drafts=bool({"coding", "paper_writing"} & invalidated))
+    state.setdefault("stage_inputs_override", {})["method_design"] = {
+        "review_feedback": feedback,
+        "previous_method": method,
+        "previous_execution": {
+            "execution_kind": execution.get("execution_kind"),
+            "analysis": execution.get("analysis", {}),
+            "execution_policy": execution.get("execution_policy", {}),
+        },
+    }
+    metadata = state.setdefault("metadata", {})
+    round_number = int(metadata.get("revision_round", 0)) + 1
+    metadata["revision_round"] = round_number
+    metadata.setdefault("revision_history", []).append({
+        "round": round_number,
+        "created_at": datetime.now().isoformat(),
+        "recommendation": recommendation,
+        "invalidated_stages": sorted(invalidated),
+        "major_issues": [item.get("issue", "") for item in feedback["weaknesses"]
+                         if isinstance(item, dict) and item.get("severity") == "major"],
+    })
+    cp.save(state)
+    print(f"Revision round {round_number}: invalidated {', '.join(sorted(invalidated))}")
+    args.no_resume = False
+    args.resume = True
+    args.direction = None
+    return cmd_run(args, config)
 
 
 def cmd_status(args, config):
@@ -303,7 +370,7 @@ def main(argv=None):
     run.add_argument("--session")
     run.add_argument("--workflow")
     run.add_argument("--no-resume", action="store_true")
-    for command in ("resume", "status", "repair", "reset-stage", "accept"):
+    for command in ("resume", "status", "repair", "revise", "reset-stage", "accept"):
         child = sub.add_parser(command)
         child.add_argument("--session", required=True)
         child.add_argument("--workflow")
@@ -318,9 +385,9 @@ def main(argv=None):
         setup_logging(**{"level": config.get("logging", {}).get("level", "INFO"),
                          "log_file": config.get("logging", {}).get("file", "")})
         action = {"run": cmd_run, "resume": cmd_resume, "status": cmd_status,
-                  "repair": cmd_repair, "reset-stage": cmd_reset_stage,
+                  "repair": cmd_repair, "revise": cmd_revise, "reset-stage": cmd_reset_stage,
                   "accept": cmd_accept, "list": cmd_list}[args.command]
-        if args.command in ("run", "resume", "repair", "reset-stage"):
+        if args.command in ("run", "resume", "repair", "revise", "reset-stage"):
             if args.command != "run":
                 existing_session(args, config)
             cp = CheckpointManager(config["paths"]["sessions_dir"], args.session)

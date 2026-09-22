@@ -8,6 +8,7 @@ from harness.skills import CodeReviewSkill, DependencyCheckSkill, TestGeneration
 from harness.agents.executor import ExecutorAgent
 from harness.agents.documenter import DocumenterAgent
 from harness.agents.reviewer import ReviewerAgent
+from harness.agents.method import MethodAgent
 
 
 def test_imports_and_instantiation_without_credentials(monkeypatch):
@@ -101,6 +102,30 @@ def test_coder_regenerates_file_with_disallowed_import(tmp_path, monkeypatch):
     assert "outside the configured dependency allowlist: numpy" in prompts[2]
 
 
+def test_coder_regenerates_invalid_manifest_in_place(tmp_path, monkeypatch):
+    agent = CoderAgent(allowed_dependencies=[])
+    manifest = {"files": [{"path": "main.py", "description": "entry", "interface": "def run()"}],
+                "entry_point": "main.py", "dependencies": "", "run_instructions": "python main.py"}
+    replies = iter([
+        "not json",
+        json.dumps(manifest),
+        "def run():\n    return 1\n\nprint(run())\n",
+        "from main import run\nassert run() == 1\n",
+    ])
+    prompts = []
+
+    def respond(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(agent, "_call_llm", respond)
+    output = agent.run("coding", {}, {"session_dir": str(tmp_path)})
+
+    assert output["entry_point"] == "main.py"
+    assert "Previous manifest was invalid" in prompts[1]
+    assert "without file contents" in prompts[1]
+
+
 def test_reviewer_prefers_executed_source_over_early_design_hint():
     prompt = ReviewerAgent().build_prompt("self_review", {
         "research_question": "Does the method work?",
@@ -111,8 +136,59 @@ def test_reviewer_prefers_executed_source_over_early_design_hint():
 
     assert "prefer this over early design hints" in prompt
     assert '"path": "main.py"' in prompt
+    assert '"complete": true' in prompt
     assert "import statistics" in prompt
     assert "standard library only" in prompt
+    assert '"evidence_verdict": "supported|contradicted|inconclusive|invalid"' in prompt
+
+
+def test_reviewer_marks_context_truncation_without_calling_source_incomplete():
+    prompt = ReviewerAgent().build_prompt("self_review", {
+        "implementation": [{"path": "large.py", "content": "x" * 16000}],
+    }, {})
+    assert '"complete": false' in prompt
+    assert '"original_chars": 16000' in prompt
+    assert "不得因上下文裁剪声称源码缺失" in prompt
+
+
+def test_reviewer_separates_evidence_validity_from_publication_recommendation():
+    agent = ReviewerAgent()
+    output = {
+        "recommendation": "weak_reject",
+        "evidence_verdict": "contradicted",
+        "claim_scope": "The hypothesis failed on one deterministic synthetic task.",
+        "weaknesses": [{"severity": "major", "category": "scope",
+                        "issue": "Only one task", "suggestion": "add tasks"}],
+        "revision_plan": [],
+    }
+    agent.validate_output(output)
+    output["weaknesses"][0].pop("category")
+    with pytest.raises(ValueError, match="severity and category"):
+        agent.validate_output(output)
+
+
+def test_method_revision_prompt_requires_concrete_review_repairs():
+    prompt = MethodAgent().build_prompt("method_design", {
+        "research_question": "Does it work?",
+        "review_feedback": {
+            "recommendation": "weak_reject",
+            "weaknesses": [{"severity": "major", "issue": "invalid baseline"}],
+            "revision_plan": [{"priority": "high", "action": "replace baseline"}],
+            "missing_experiments": ["ablation"],
+        },
+        "previous_method": {"method_name": "OldMethod"},
+        "previous_execution": {"analysis": {"metrics": {"score": 0.1}}},
+    }, {})
+
+    assert "这是一次审稿驱动的修订" in prompt
+    assert "invalid baseline" in prompt and "replace baseline" in prompt
+    assert "不得只修改措辞或隐藏负面结果" in prompt
+    assert "OldMethod" in prompt and '"score": 0.1' in prompt
+
+    with pytest.raises(ValueError, match="revision_response"):
+        MethodAgent().parse_output(json.dumps({"method_name": "Changed"}), "method_design", {
+            "review_feedback": {"recommendation": "reject"},
+        })
 
 
 def test_dependency_missing(monkeypatch):

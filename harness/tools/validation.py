@@ -49,6 +49,26 @@ def metric_constraint_errors(metrics: dict, constraints: dict) -> list[str]:
     return errors
 
 
+def comparison_metric_errors(metrics: dict) -> list[str]:
+    """Validate the cross-topic comparison metric contract when it is present."""
+    keys = {"proposed_primary", "baseline_primary", "improvement_delta", "sample_count"}
+    if not keys.issubset(metrics):
+        return []
+    errors = []
+    proposed = metrics["proposed_primary"]
+    baseline = metrics["baseline_primary"]
+    delta = metrics["improvement_delta"]
+    expected = proposed - baseline
+    if not math.isclose(delta, expected, rel_tol=1e-6, abs_tol=1e-9):
+        errors.append(
+            f"improvement_delta={delta} does not equal proposed_primary-baseline_primary={expected}"
+        )
+    count = metrics["sample_count"]
+    if count <= 0 or not float(count).is_integer():
+        errors.append(f"sample_count={count} must be a positive integer")
+    return errors
+
+
 def validate_file(path: str, content: str) -> None:
     if not isinstance(content, str):
         raise ValueError(f"File content must be text: {path}")

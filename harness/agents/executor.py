@@ -1,6 +1,7 @@
 """Execute generated code in a fresh source directory and a session virtualenv."""
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -15,9 +16,26 @@ from harness.tools.code_runner import write_code_files
 from harness.tools.process import run_command
 from harness.tools.validation import (metric_constraint_errors, validate_dependencies,
                                       validate_files, validate_imports,
-                                      validate_metric_constraints)
+                                      validate_metric_constraints, comparison_metric_errors)
 
 logger = logging.getLogger(__name__)
+
+
+def flatten_numeric_metrics(value, prefix=""):
+    """Preserve numeric leaves from structured metric envelopes using dotted paths."""
+    flattened = {}
+    if not isinstance(value, dict):
+        return flattened
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or "." in key:
+            continue
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(item, dict):
+            flattened.update(flatten_numeric_metrics(item, path))
+        elif (isinstance(item, (int, float)) and not isinstance(item, bool)
+              and math.isfinite(item)):
+            flattened[path] = item
+    return flattened
 
 
 class ExecutorAgent(BaseAgent):
@@ -140,6 +158,12 @@ class ExecutorAgent(BaseAgent):
                 error = "HARNESS_METRICS violates constraints: " + "; ".join(violations)
                 output.update(success=False, test_success=False, error=error)
                 output["analysis"].update(success=False, errors=[error])
+        if output["success"] and kind == "entry_point":
+            violations = comparison_metric_errors(output["analysis"]["metrics"])
+            if violations:
+                error = "HARNESS_METRICS violates comparison contract: " + "; ".join(violations)
+                output.update(success=False, test_success=False, error=error)
+                output["analysis"].update(success=False, errors=[error])
         if self.enable_code_review and success:
             registry = getattr(self, "skill_registry", None) or get_global_registry()
             output["code_review"] = [
@@ -166,6 +190,10 @@ class ExecutorAgent(BaseAgent):
         violations = metric_constraint_errors(metrics, self.metric_constraints)
         if violations:
             raise ValueError("Cached HARNESS_METRICS violates constraints: " + "; ".join(violations))
+        violations = comparison_metric_errors(metrics)
+        if violations:
+            raise ValueError("Cached HARNESS_METRICS violates comparison contract: "
+                             + "; ".join(violations))
 
     def _report(self, success, code_dir, install_log, runs, kind, error=""):
         log = "\n".join(run["stdout"] + run["stderr"] for run in runs)
@@ -183,8 +211,7 @@ class ExecutorAgent(BaseAgent):
             except ValueError:
                 continue
             if isinstance(values, dict):
-                metrics.update({k: v for k, v in values.items()
-                                if isinstance(v, (int, float)) and not isinstance(v, bool)})
+                metrics.update(flatten_numeric_metrics(values))
         summary = (f"{kind}: {'passed' if success else 'failed'}. "
                    + ("Quick validation only; no full experiment has been established."
                       if kind == "smoke_test" else "See command logs for execution scope."))

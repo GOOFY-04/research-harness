@@ -94,6 +94,15 @@ def test_json_root_must_be_object():
     assert BaseAgent._parse_json('```json\n{"a":1}\n```') == {"a":1}
 
 
+def test_json_parser_preserves_single_backslash_latex_commands():
+    raw = r'''```json
+{"algorithm":"$\alpha$ uses $\nabla$ and \text{loss}","lines":"first\nsecond"}
+```'''
+    parsed = BaseAgent._parse_json(raw)
+    assert parsed["algorithm"] == r"$\alpha$ uses $\nabla$ and \text{loss}"
+    assert parsed["lines"] == "first\nsecond"
+
+
 def test_budget_validation_and_truncation():
     with pytest.raises(ValueError):
         MethodAgent(max_tokens=8192, thinking_budget=10000)
@@ -137,6 +146,8 @@ def test_writer_rejects_inconsistent_relative_improvement_percentage():
     validate_metric_claims(r"relative improvement was 0.069\%", metrics)
     with pytest.raises(ValueError, match="Inconsistent improvement percentage"):
         validate_metric_claims(r"relative improvement was 0.007\%", metrics)
+    _, delta_facts = canonical_metric_facts({"analysis": {"metrics": {"improvement_delta": 0.2}}})
+    assert delta_facts == ["improvement_delta = 0.2"]
 
 
 def test_writer_cached_output_rechecks_latex_structure():
@@ -171,6 +182,34 @@ def test_writer_retries_only_a_transient_subrequest(monkeypatch):
     result = agent.run("paper", {"sources":[]}, {})
     assert result["title"] == "Title"
     assert calls["count"] == 7
+
+
+def test_writer_resumes_persisted_sections_after_repeated_incomplete_response(tmp_path, monkeypatch):
+    agent = WriterAgent()
+    calls = {"count": 0}
+
+    def first_call(prompt):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return '{"title":"Title","abstract":"Abstract"}'
+        if calls["count"] <= 3:
+            return f"Persisted section {calls['count']}"
+        raise ValueError("Incomplete model response: length")
+
+    monkeypatch.setattr(agent, "_call_llm", first_call)
+    state = {"session_dir": str(tmp_path)}
+    with pytest.raises(ValueError, match="Incomplete model response"):
+        agent.run("paper", {"sources": []}, state)
+    draft_path = next((tmp_path / ".drafts").glob("paper_*.json"))
+    saved = json.loads(draft_path.read_text(encoding="utf-8"))
+    assert list(saved["sections"]) == ["introduction", "related_work"]
+
+    remaining = iter(["Method body", "Experiment body", "Conclusion body"])
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: next(remaining))
+    result = agent.run("paper", {"sources": []}, state)
+    assert result["title"] == "Title"
+    assert result["latex_sections"]["introduction"] == "Persisted section 2"
+    assert result["latex_sections"]["related_work"] == "Persisted section 3"
 
 
 def test_writer_prompt_contains_implementation_as_source_of_truth(monkeypatch):
@@ -260,6 +299,47 @@ def test_coder_generates_yaml_and_checks_interfaces(tmp_path, monkeypatch):
     assert "COMPLETE yaml file config.yaml" in prompts[2]
     assert "never use a wall-clock while-loop" in prompts[3]
     assert "def forward(x)" in prompts[3]
+
+
+def test_coder_resumes_persisted_files_after_subrequest_timeout(tmp_path, monkeypatch):
+    agent = CoderAgent(allowed_dependencies=[])
+    manifest = {"files": [
+        {"path": "a.py", "description": "first", "interface": "def first()"},
+        {"path": "b.py", "description": "second", "interface": "def second()"},
+    ], "entry_point": "b.py", "dependencies": "", "run_instructions": "python b.py"}
+    first_replies = iter([
+        json.dumps(manifest),
+        "def first():\n    return 1\n",
+        TimeoutError("provider timeout on final file"),
+    ])
+
+    def first_call(_prompt):
+        value = next(first_replies)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(agent, "_call_llm", first_call)
+    state = {"session_dir": str(tmp_path), "metadata": {"research_direction": "resume test"}}
+    with pytest.raises(TimeoutError):
+        agent.run("coding", {"overview": "same context"}, state)
+
+    resumed_prompts = []
+    second_replies = iter([
+        "def second():\n    return 2\n\nprint(second())\n",
+        "from a import first\nfrom b import second\nassert first() + second() == 3\n",
+    ])
+
+    def second_call(prompt):
+        resumed_prompts.append(prompt)
+        return next(second_replies)
+
+    monkeypatch.setattr(agent, "_call_llm", second_call)
+    output = agent.run("coding", {"overview": "same context"}, state)
+
+    assert [item["path"] for item in output["files"]] == ["a.py", "b.py"]
+    assert len(resumed_prompts) == 2
+    assert all("Design 6-10 files" not in prompt for prompt in resumed_prompts)
 
 
 def test_coder_repairs_files_from_executor_feedback(tmp_path, monkeypatch):

@@ -2,6 +2,8 @@
 
 Run from the repository root:
     python -m experiments.harness_ablation --output experiments/results/harness_ablation.json
+or:
+    python experiments/harness_ablation.py --output experiments/results/harness_ablation.json
 
 The benchmark uses deterministic fake agents.  It tests harness mechanics; it
 does not measure LLM research quality or establish novelty against every other
@@ -15,8 +17,12 @@ import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 
 import yaml
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.acceptance import evaluate_session
 from harness.core.checkpoint import CheckpointManager
@@ -92,7 +98,8 @@ def _evidence_fixture(root: Path) -> dict:
                            "execution_policy": {"required_metric_keys": ["score"],
                                                 "metric_constraints": {"score": {"min": 0.5}}},
                            "analysis": {"metrics": {"score": 0.75}}},
-        "self_review": {"recommendation": "weak_accept", "weaknesses": []},
+        "self_review": {"recommendation": "weak_accept", "evidence_verdict": "supported",
+                        "claim_scope": "one deterministic synthetic task", "weaknesses": []},
         "paper_writing": {"full_paper_latex": "paper\n", "bibtex_entries": "refs\n",
                           "verified_metrics": {"score": 0.75}, "evidence_scope": "entry_point"},
         "documentation": {"readme": "# Result\n"},
@@ -118,7 +125,8 @@ def evidence_ablation(root: Path) -> dict:
     (root / "code/main.py").write_text("print('ok')\n", encoding="utf-8")
     state["stages"]["self_review"]["output"] = {
         "recommendation": "weak_reject",
-        "weaknesses": [{"severity": "major", "issue": "invalid baseline"}],
+        "evidence_verdict": "invalid", "claim_scope": "invalid baseline",
+        "weaknesses": [{"severity": "major", "category": "validity", "issue": "invalid baseline"}],
     }
     weak_review = evaluate_session(root, state, STAGES)
     return {

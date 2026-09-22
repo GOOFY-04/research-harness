@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 import pytest
-from harness.agents.executor import ExecutorAgent
+from harness.agents.executor import ExecutorAgent, flatten_numeric_metrics
 from harness.tools.process import run_command
 
 
@@ -52,6 +52,25 @@ def test_metrics_json_envelope_is_accepted(tmp_path):
         "exec", data, {"session_dir": str(tmp_path)})
     assert result["success"] is True
     assert result["analysis"]["metrics"] == {"accuracy": 0.75}
+
+
+def test_nested_metric_envelope_is_flattened_without_losing_evidence(tmp_path):
+    data = inputs(test="")
+    data["files"][1]["content"] = (
+        "import json\nprint('HARNESS_METRICS=' + json.dumps({"
+        "'proposed': {'coverage': 0.91, 'width': 2.4}, "
+        "'baseline': {'coverage': 0.88}, 'sample_count': 150}))"
+    )
+    result = ExecutorAgent(
+        install_dependencies=False, require_metrics=True,
+        required_metric_keys=["proposed.coverage", "baseline.coverage", "sample_count"],
+    ).run("exec", data, {"session_dir": str(tmp_path)})
+    assert result["success"] is True
+    assert result["analysis"]["metrics"] == {
+        "proposed.coverage": 0.91, "proposed.width": 2.4,
+        "baseline.coverage": 0.88, "sample_count": 150,
+    }
+    assert flatten_numeric_metrics({"bad.key": 1, "ok": float("inf"), "flag": True}) == {}
 
 
 def test_missing_required_metric_keys_fail_entry_point(tmp_path):

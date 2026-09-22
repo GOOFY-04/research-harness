@@ -21,7 +21,7 @@ from harness.acceptance import sha256_file
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = 1
-MUTATIONS = {"run", "resume", "repair", "reset-stage"}
+MUTATIONS = {"run", "resume", "repair", "revise", "reset-stage"}
 
 
 def parse_request(raw: bytes):
@@ -85,7 +85,8 @@ class ResearchService:
                            "started_at": info.get("started_at"), "repair_from": stage.repair_from})
         execution = state["stages"].get("code_execution", {})
         output = execution.get("output") or {}
-        review = (state["stages"].get("self_review", {}).get("output") or {}).get("recommendation")
+        review_output = state["stages"].get("self_review", {}).get("output") or {}
+        review = review_output.get("recommendation")
         metrics = {key: value for key, value in output.get("analysis", {}).get("metrics", {}).items()
                    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)}
         required = config.get("agents", {}).get("executor", {}).get("required_metric_keys", [])
@@ -95,6 +96,36 @@ class ResearchService:
             path = safe_path(cp.session_dir, relative)
             if cp.is_stage_done(state, stage) and path.exists():
                 artifacts.append({"stage": stage, "path": str(path)})
+        draft_progress = None
+        paper_draft_progress = None
+        draft_dir = safe_path(cp.session_dir, ".drafts")
+        if state.get("current_stage") == "coding" and draft_dir.is_dir():
+            try:
+                drafts = sorted(draft_dir.glob("coding_*.json"),
+                                key=lambda item: item.stat().st_mtime, reverse=True)
+                if drafts:
+                    draft = json.loads(drafts[0].read_text(encoding="utf-8"))
+                    generated = len(draft.get("files", []))
+                    total = len(draft.get("manifest", {}).get("files", []))
+                    if total > 0 and 0 <= generated <= total:
+                        draft_progress = {"generated_files": generated, "total_files": total,
+                                          "test_ready": isinstance(draft.get("test_snippet"), str)}
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+        if state.get("current_stage") == "paper_writing" and draft_dir.is_dir():
+            try:
+                drafts = sorted(draft_dir.glob("paper_*.json"),
+                                key=lambda item: item.stat().st_mtime, reverse=True)
+                if drafts:
+                    draft = json.loads(drafts[0].read_text(encoding="utf-8"))
+                    sections = draft.get("sections", {})
+                    if isinstance(sections, dict) and 0 <= len(sections) <= 5:
+                        paper_draft_progress = {
+                            "generated_sections": len(sections), "total_sections": 5,
+                            "metadata_ready": isinstance(draft.get("meta"), dict),
+                        }
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
         active = job and job["status"] in ("running", "queued")
         status = state.get("status", "pending")
         if status == "running" and not active:
@@ -124,11 +155,15 @@ class ResearchService:
         return {"session": session, "direction": state.get("metadata", {}).get("research_direction", ""),
                 "status": status, "current_stage": state.get("current_stage"), "stages": stages,
                 "job": job, "metrics": metrics, "artifacts": artifacts, "review": review,
+                "evidence_verdict": review_output.get("evidence_verdict"),
                 "evidence": {"execution_kind": output.get("execution_kind", "not_run"),
                              "execution_passed": execution.get("status") == "done" and output.get("success") is True,
                              "missing_metrics": sorted(set(required) - set(metrics)),
                              "scientific_validity": "not_established"},
                 "acceptance": acceptance,
+                "draft_progress": draft_progress,
+                "paper_draft_progress": paper_draft_progress,
+                "revision_round": int(state.get("metadata", {}).get("revision_round", 0)),
                 "repairs": len((state["stages"].get("coding", {}).get("output") or {}).get("repair_history", [])),
                 "checkpoint": str(cp.checkpoint_file)}
 

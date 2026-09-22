@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 from harness.core.agent import BaseAgent
-from harness.core.io import safe_path, strip_outer_fence
+from harness.core.io import atomic_json, safe_path, strip_outer_fence
 from harness.tools.validation import (validate_file, validate_files, validate_dependencies,
                                       validate_imports, validate_metric_constraints)
 
@@ -147,6 +147,54 @@ Research context: {context}"""
                 prompt += f"\nPrevious smoke test was invalid: {exc}. Regenerate it completely."
         raise ValueError("Smoke test generation failed")
 
+    def _draft_path(self, state, context):
+        policy = json.dumps({
+            "context": context,
+            "allowed_dependencies": self.allowed_dependencies,
+            "required_metric_keys": self.required_metric_keys,
+            "metric_constraints": self.metric_constraints,
+        }, ensure_ascii=False, sort_keys=True)
+        digest = hashlib.sha256(policy.encode("utf-8")).hexdigest()
+        path = safe_path(state.get("session_dir", "."), f".drafts/coding_{digest[:20]}.json")
+        return path, digest
+
+    def _load_draft(self, path, digest, state):
+        if not path.is_file():
+            return None
+        try:
+            draft = json.loads(path.read_text(encoding="utf-8"))
+            manifest = draft["manifest"]
+            files = draft.get("files", [])
+            if draft.get("context_sha256") != digest or not isinstance(manifest.get("files"), list):
+                return None
+            manifest_paths = [item["path"] for item in manifest["files"]]
+            if [item.get("path") for item in files] != manifest_paths[:len(files)]:
+                return None
+            validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
+            for info in manifest["files"]:
+                safe_path(state.get("session_dir", "."), info["path"])
+            for item in files:
+                validate_file(item["path"], item["content"])
+            test = draft.get("test_snippet")
+            if test is not None:
+                if not isinstance(test, str):
+                    return None
+                compile(test, "<persisted_generated_test>", "exec")
+                validate_imports(files + [{"path": "__harness_smoke_test__.py", "content": test}],
+                                 self.allowed_dependencies)
+            return draft
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, SyntaxError):
+            return None
+
+    @staticmethod
+    def _save_draft(path, digest, manifest, files, test_snippet=None):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"schema_version": 1, "context_sha256": digest,
+                   "manifest": manifest, "files": files}
+        if test_snippet is not None:
+            payload["test_snippet"] = test_snippet
+        atomic_json(path, payload)
+
     def run(self, stage_id, inputs, state):
         research_context = dict(inputs)
         direction = state.get("metadata", {}).get("research_direction")
@@ -154,8 +202,16 @@ Research context: {context}"""
             research_context["original_research_direction"] = direction
         context = json.dumps(research_context, ensure_ascii=False, indent=2)
         dependency_instruction = self._dependency_instruction()
-        logger.info("[CoderAgent] generating implementation manifest")
-        manifest = self._parse_json(self._call_llm(f"""You are implementing a research prototype.
+        draft_path, context_digest = self._draft_path(state, context)
+        draft = self._load_draft(draft_path, context_digest, state)
+        if draft:
+            manifest = draft["manifest"]
+            files = list(draft.get("files", []))
+            logger.info("[CoderAgent] resuming coding draft with %s/%s files",
+                        len(files), len(manifest["files"]))
+        else:
+            logger.info("[CoderAgent] generating implementation manifest")
+            manifest_prompt = f"""You are implementing a research prototype.
 Design 6-10 files with consistent public interfaces. Return a JSON object:
 {{"files":[{{"path":"relative/path.py","description":"purpose","interface":"exact public class/function signatures"}}],
 "entry_point":"train.py","dependencies":"requirements.txt text","run_instructions":"Markdown"}}
@@ -175,19 +231,43 @@ The entry point will be executed by the harness as a bounded end-to-end experime
 - print one final line beginning HARNESS_METRICS= followed by a JSON object of numeric metrics,
   including proposed and baseline scores plus an improvement/delta where meaningful;
 - include every configured metric key: {json.dumps(self.required_metric_keys, ensure_ascii=False)};
+- when proposed_primary, baseline_primary, improvement_delta and sample_count are configured, use the
+  same directly observed primary metric for proposed_primary and baseline_primary, define
+  improvement_delta = proposed_primary - baseline_primary (a signed raw difference, not a percentage),
+  and set sample_count to the integer number of held-out evaluation cases;
 - satisfy these executed-metric acceptance constraints: {json.dumps(self.metric_constraints, ensure_ascii=False)};
 - clearly label all results as synthetic-benchmark evidence, not publication claims.
 Research design:
-{context}"""))
-        if manifest.get("parse_error") or not isinstance(manifest.get("files"), list) or not manifest["files"]:
-            raise ValueError("Invalid code manifest")
-        validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
-        for info in manifest["files"]:
-            safe_path(state.get("session_dir", "."), info["path"])
-        files = []
+{context}"""
+            for manifest_attempt in range(3):
+                manifest = self._parse_json(self._call_llm(manifest_prompt))
+                try:
+                    items = manifest.get("files")
+                    if (manifest.get("parse_error") or not isinstance(items, list) or not items
+                            or not all(isinstance(item, dict)
+                                       and isinstance(item.get("path"), str)
+                                       and isinstance(item.get("description"), str)
+                                       for item in items)):
+                        raise ValueError("manifest needs non-empty file objects with path and description")
+                    if not isinstance(manifest.get("entry_point"), str):
+                        raise ValueError("manifest needs an entry_point string")
+                    validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
+                    for info in items:
+                        safe_path(state.get("session_dir", "."), info["path"])
+                    break
+                except (ValueError, TypeError, KeyError) as exc:
+                    if manifest_attempt == 2:
+                        raise ValueError(f"Invalid code manifest: {exc}") from exc
+                    logger.warning("[CoderAgent] invalid manifest; regenerating: %s", exc)
+                    manifest_prompt += (f"\nPrevious manifest was invalid: {exc}. Return only the compact JSON "
+                                        "manifest, without file contents or explanatory prose.")
+            files = []
+            self._save_draft(draft_path, context_digest, manifest, files)
         manifest_paths = [item["path"] for item in manifest["files"]]
         logger.info("[CoderAgent] manifest accepted: %s files", len(manifest_paths))
         for file_index, info in enumerate(manifest["files"], start=1):
+            if file_index <= len(files):
+                continue
             path = info["path"]
             logger.info("[CoderAgent] generating file %s/%s: %s", file_index, len(manifest_paths), path)
             extension = Path(path).suffix.lower()
@@ -224,10 +304,20 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
                         raise
                     prompt += f"\nPrevious output was invalid: {exc}. Regenerate the complete file."
             files.append({**info, "content": content})
-        validate_files(files, state.get("session_dir", "."))
-        validate_imports(files, self.allowed_dependencies)
-        logger.info("[CoderAgent] generating smoke test from implementation source")
-        test = self._generate_smoke_test(files, context, dependency_instruction)
+            self._save_draft(draft_path, context_digest, manifest, files)
+        try:
+            validate_files(files, state.get("session_dir", "."))
+            validate_imports(files, self.allowed_dependencies)
+        except (ValueError, SyntaxError):
+            draft_path.unlink(missing_ok=True)
+            raise
+        if isinstance((draft or {}).get("test_snippet"), str):
+            test = draft["test_snippet"]
+            logger.info("[CoderAgent] reusing validated smoke test from coding draft")
+        else:
+            logger.info("[CoderAgent] generating smoke test from implementation source")
+            test = self._generate_smoke_test(files, context, dependency_instruction)
+            self._save_draft(draft_path, context_digest, manifest, files, test)
         output = {"files": files, "entry_point": manifest.get("entry_point", ""),
                   "dependencies": manifest.get("dependencies", ""),
                   "run_instructions": manifest.get("run_instructions", ""), "test_snippet": test}

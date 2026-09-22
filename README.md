@@ -46,6 +46,7 @@ API 使用 Bearer Token 调用 `/v1/chat/completions`。已有系统环境变量
 python main.py run --direction "基于 Transformer 的时间序列预测方法"
 python main.py run --direction "研究方向" --session my_research
 python main.py resume --session my_research
+python main.py revise --session my_research
 python main.py status --session my_research
 python main.py accept --session my_research --write-report
 python main.py list
@@ -56,6 +57,7 @@ python main.py run --direction "新的研究方向" --session my_research --no-r
 
 - `resume` 使用 session 保存的工作流路径，也接受 `--workflow custom.yaml`。
 - `reset-stage coding` 同时使所有下游结果失效，避免新代码与旧论文混用。
+- `revise` 仅用于 `reject`/`weak_reject` 会话：归档当前产物，把重大问题、修改计划、缺失实验和上一轮执行证据注入方法设计，然后自动重跑方法、代码、实验、审稿、论文和文档。
 - `--no-resume` 真正从空状态开始，旧 checkpoint 和产物归档到 `history/`。
 - 相同 session 改研究方向时，必须使用新 session 或 `--no-resume`。
 - 流程失败或被阻塞时退出码为 1；中断为 130；成功为 0。
@@ -89,6 +91,10 @@ bun run dev:harness
 - 工作区内按 `U` 从 checkpoint 恢复，按 `S` 选择并只读检查其他会话。
 
 研究工作区采用 Chat / Plan / Execution / Evidence 四个持续可见的入口，一次聚焦一个视图。Plan 展示实验流水线，Execution 展示当前阶段和 worker 日志，Evidence 展示 checkpoint 中实际保存的阶段 JSON 输出与证据账本；左右方向键切换视图，按 O 可选择任意阶段输出。失败阶段、缺失指标、执行证据、科学有效性、审稿意见和产物位置均可直接检查，执行通过与科研结论成立始终分开表达。快捷键为 N 新建、S 会话、R 刷新、O 输出、U 恢复、X 重置、Esc 返回发起工作区的具体对话。
+
+审稿输出把顶会录用建议与证据有效性分开：`recommendation` 评价发表成熟度，`evidence_verdict` 判断当前执行证据是支持、反驳、不充分还是无效。验收允许技术上可信的负结果（`contradicted`），但会拦截无效证据和重大 validity 缺陷。
+
+当审稿结果为 `reject` 或 `weak_reject` 时，按 V 可启动审稿驱动修订。界面显示当前修订轮次；旧代码、实验和论文先归档，审稿中的重大问题及缺失实验会进入下一轮方法设计。
 
 OpenCode CLI 首页也使用 Research Harness 作为主信息架构：从“问题 → 流水线 → 证据 → 审查”开始，展示 checkpoint 可恢复、证据门控和结论边界三项研究契约，并读取真实 checkpoint 汇总当前需要关注的实验。首页输入框优先引导用户声明可证伪问题及所需证据，而不是直接要求生成结论。
 
@@ -126,6 +132,8 @@ planning → literature → method_design → coding → code_execution
 
 `code_execution` 默认把失败的子进程命令、返回码和截断日志反馈给 Coder。Coder 先生成最小修复计划，只重写计划中的已有文件，完整静态校验后更新 `coding` 检查点并重新执行。修复历史保存在 `coding.repair_history`，最多修复次数由执行阶段的 `max_retries` 控制。
 
+Coder 的 manifest、每个已验证文件和 smoke test 会按研究上下文写入 `.drafts/` 原子草稿；Writer 同样保存标题、摘要和每个已验证章节。模型请求超时或响应截断后，同一上下文只继续缺失文件或章节。对应阶段成功、手动重置或审稿修订时，草稿随旧产物归档，避免错误复用。CLI/TUI 会显示编码文件数与论文章节数。
+
 ## 执行与产物校验
 
 - 代码按扩展名生成；检查 Python 语法、YAML/JSON、重复路径以及直接的本地模块导入。
@@ -134,6 +142,7 @@ planning → literature → method_design → coding → code_execution
 - 默认运行生成的快速测试；没有测试但有入口文件时运行入口。
 - 依赖安装到 `session/.venv`。安装失败、子进程失败或超时会使阶段失败，并阻止论文生成。
 - 正式入口可启用 `require_metrics: true`；此时退出码为 0 但缺少 `HARNESS_METRICS=<numeric JSON>` 仍会判定失败并进入修复流程。
+- 指标 JSON 可嵌套，Harness 以点路径保留所有有限数值叶子。完整实验配置强制输出 `proposed_primary`、`baseline_primary`、`improvement_delta` 与 `sample_count`，校验差值等于前两者之差且样本数为正整数。
 - `required_metric_keys` 校验指标是否齐全；`metric_constraints` 可为指标设置 `min`/`max` 数值边界。违反边界的真实执行会失败并把观测值反馈给自动修复器。
 - 子进程日志有长度限制；超时或中断时清理进程树。模型服务凭据不传给生成程序。
 - 虚拟环境用于依赖隔离，**不是操作系统安全沙箱**；生成程序仍使用当前用户权限。

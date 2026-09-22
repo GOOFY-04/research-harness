@@ -21,7 +21,8 @@ def completed_state():
                                  "metric_constraints": {"score": {"min": 0.5}}},
             "analysis": {"metrics": {"score": 0.75}},
         },
-        "self_review": {"recommendation": "weak_accept", "weaknesses": []},
+        "self_review": {"recommendation": "weak_accept", "evidence_verdict": "supported",
+                        "claim_scope": "one deterministic synthetic task", "weaknesses": []},
         "paper_writing": {"full_paper_latex": "paper\n", "bibtex_entries": "refs\n",
                           "verified_metrics": {"score": 0.75},
                           "evidence_scope": "entry_point"},
@@ -65,7 +66,8 @@ def test_acceptance_rejects_untraceable_claims_and_weak_review(tmp_path):
     state["stages"]["paper_writing"]["output"]["verified_metrics"] = {"score": 0.9}
     state["stages"]["self_review"]["output"].update({
         "recommendation": "weak_reject",
-        "weaknesses": [{"severity": "major", "issue": "invalid baseline"}],
+        "evidence_verdict": "invalid",
+        "weaknesses": [{"severity": "major", "category": "validity", "issue": "invalid baseline"}],
     })
     export_fixture(tmp_path, state)
     (tmp_path / "code/main.py").write_text("print('tampered')\n", encoding="utf-8")
@@ -74,8 +76,8 @@ def test_acceptance_rejects_untraceable_claims_and_weak_review(tmp_path):
 
     assert report["decision"] == "rejected"
     assert "trace:paper-metrics" in report["failed_required_checks"]
-    assert "review:recommendation" in report["failed_required_checks"]
-    assert "review:no-major-weaknesses" in report["failed_required_checks"]
+    assert "review:evidence-verdict" in report["failed_required_checks"]
+    assert "review:no-validity-blockers" in report["failed_required_checks"]
     assert "artifact:code/main.py" in report["failed_required_checks"]
 
 
@@ -89,3 +91,37 @@ def test_acceptance_report_is_machine_readable(tmp_path):
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["schema_version"] == 1
     assert saved["session"] == tmp_path.name
+
+
+def test_acceptance_enforces_standard_comparison_arithmetic(tmp_path):
+    state = completed_state()
+    metrics = {"proposed_primary": 0.8, "baseline_primary": 0.7,
+               "improvement_delta": 0.5, "sample_count": 100}
+    execution = state["stages"]["code_execution"]["output"]
+    execution["analysis"]["metrics"] = metrics
+    execution["execution_policy"] = {
+        "required_metric_keys": list(metrics), "metric_constraints": {"sample_count": {"min": 30}},
+    }
+    state["stages"]["paper_writing"]["output"]["verified_metrics"] = metrics
+    export_fixture(tmp_path, state)
+
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "execution:comparison-contract" in report["failed_required_checks"]
+
+    metrics["improvement_delta"] = 0.1
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "execution:comparison-contract" not in report["failed_required_checks"]
+
+
+def test_revision_requires_traceable_history_and_method_response(tmp_path):
+    state = completed_state()
+    state["metadata"]["revision_round"] = 1
+    state["metadata"]["revision_history"] = [{"round": 1}]
+    export_fixture(tmp_path, state)
+
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "trace:revision-lineage" in report["failed_required_checks"]
+
+    state["stages"]["method_design"]["output"]["revision_response"] = ["fixed baseline"]
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "trace:revision-lineage" not in report["failed_required_checks"]

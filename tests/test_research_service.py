@@ -53,6 +53,40 @@ def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     assert not view["evidence"]["execution_passed"]
     assert view["evidence"]["scientific_validity"] == "not_established"
     assert view["acceptance"]["decision"] == "not_evaluated"
+    assert view["revision_round"] == 0
+    assert view["draft_progress"] is None
+    assert view["paper_draft_progress"] is None
+
+
+def test_snapshot_exposes_coding_draft_progress(service):
+    cp = checkpoint(service, "running")
+    state = cp.load()
+    state["current_stage"] = "coding"
+    cp.save(state)
+    draft = cp.session_dir / ".drafts" / "coding_context.json"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(json.dumps({"manifest": {"files": [{"path": "a.py"}, {"path": "b.py"}]},
+                                 "files": [{"path": "a.py", "content": "x=1"}]}), encoding="utf-8")
+
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["draft_progress"] == {"generated_files": 1, "total_files": 2, "test_ready": False}
+
+
+def test_snapshot_exposes_paper_draft_progress(service):
+    cp = checkpoint(service, "running")
+    state = cp.load()
+    state["current_stage"] = "paper_writing"
+    cp.save(state)
+    draft = cp.session_dir / ".drafts" / "paper_context.json"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(json.dumps({"meta": {"title": "T", "abstract": "A"},
+                                 "sections": {"introduction": "I", "related_work": "R"}}),
+                     encoding="utf-8")
+
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["paper_draft_progress"] == {
+        "generated_sections": 2, "total_sections": 5, "metadata_ready": True,
+    }
 
 
 def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(service):
@@ -120,6 +154,15 @@ def test_resume_pins_admitted_configuration(service, monkeypatch):
     atomic_json(service.job_path("study"), {"id": "old", "session": "study", "status": "failed", "config": "configs/strict.yaml"})
     result = service.handle({"action": "resume", "session": "study"})
     assert result["job"]["config"] == "configs/strict.yaml"
+
+
+def test_revision_is_admitted_as_a_background_mutation(service, monkeypatch):
+    checkpoint(service)
+    monkeypatch.setattr(service, "spawn_worker", lambda *args: None)
+    result = service.handle({"action": "revise", "session": "study"})
+    assert result["accepted"] is True
+    assert result["job"]["action"] == "revise"
+    assert "revise" in result["job"]["argv"]
 
 
 def test_crashed_worker_and_reset_preview(service):

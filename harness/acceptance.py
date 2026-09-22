@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .core.io import safe_path
+from .tools.validation import comparison_metric_errors
 
 
 APPROVED_RECOMMENDATIONS = {"accept", "weak_accept"}
@@ -130,6 +131,17 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
            f"{len(metrics)} numeric metrics persisted" if metrics else "no numeric metrics persisted")
     policy_ok, policy_detail = _metric_policy_ok(metrics, execution.get("execution_policy", {}))
     _check(checks, "execution:metric-policy", "execution", policy_ok, policy_detail)
+    comparison_keys = {"proposed_primary", "baseline_primary", "improvement_delta", "sample_count"}
+    required_keys = execution.get("execution_policy", {}).get("required_metric_keys", [])
+    comparison_required = isinstance(required_keys, list) and comparison_keys.issubset(required_keys)
+    comparison_problems = comparison_metric_errors(metrics)
+    comparison_present = comparison_keys.issubset(metrics)
+    _check(checks, "execution:comparison-contract", "execution",
+           comparison_present and not comparison_problems if comparison_required else True,
+           "; ".join(comparison_problems) if comparison_problems
+           else ("standard comparison metrics are arithmetically consistent" if comparison_present
+                 else "standard comparison contract is not configured"),
+           required=comparison_required)
 
     literature = stages.get("literature", {}).get("output", {})
     sources = literature.get("sources", []) if isinstance(literature, dict) else []
@@ -145,6 +157,20 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
            isinstance(novelty, str) and bool(novelty.strip()),
            "novelty hypothesis persisted" if isinstance(novelty, str) and novelty.strip()
            else "novelty hypothesis missing")
+
+    metadata = state.get("metadata", {}) if isinstance(state.get("metadata"), dict) else {}
+    revision_round = metadata.get("revision_round", 0)
+    revision_history = metadata.get("revision_history", [])
+    method_output = stages.get("method_design", {}).get("output", {})
+    revision_response = method_output.get("revision_response") if isinstance(method_output, dict) else None
+    revision_trace_ok = (
+        isinstance(revision_round, int) and revision_round >= 0
+        and isinstance(revision_history, list) and len(revision_history) == revision_round
+        and (revision_round == 0 or isinstance(revision_response, list) and bool(revision_response))
+    )
+    _check(checks, "trace:revision-lineage", "traceability", revision_trace_ok,
+           f"revision round {revision_round} has matching history and response" if revision_trace_ok
+           else "revision round, history, and method revision_response are inconsistent")
 
     writing = stages.get("paper_writing", {}).get("output", {})
     writing = writing if isinstance(writing, dict) else {}
@@ -181,13 +207,20 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     review = stages.get("self_review", {}).get("output", {})
     review = review if isinstance(review, dict) else {}
     recommendation = review.get("recommendation")
-    _check(checks, "review:recommendation", "scientific_review",
+    _check(checks, "review:publication-recommendation", "scientific_review",
            recommendation in APPROVED_RECOMMENDATIONS,
-           f"review recommendation is {recommendation!r}; accepted values: {sorted(APPROVED_RECOMMENDATIONS)}")
-    major = [item for item in review.get("weaknesses", []) if isinstance(item, dict)
-             and item.get("severity") == "major"]
-    _check(checks, "review:no-major-weaknesses", "scientific_review", not major,
-           "no major weaknesses" if not major else f"{len(major)} major weaknesses remain")
+           f"publication recommendation is {recommendation!r}", required=False)
+    verdict = review.get("evidence_verdict")
+    _check(checks, "review:evidence-verdict", "scientific_review",
+           verdict in {"supported", "contradicted"},
+           f"evidence verdict is {verdict!r}; accepted values are 'supported' or 'contradicted'")
+    blockers = [item for item in review.get("weaknesses", []) if isinstance(item, dict)
+                and (item.get("severity") == "critical"
+                     or item.get("severity") == "major"
+                     and item.get("category", "validity") == "validity")]
+    _check(checks, "review:no-validity-blockers", "scientific_review", not blockers,
+           "no critical or major validity weaknesses" if not blockers
+           else f"{len(blockers)} critical/major validity weaknesses remain")
 
     recovery_events = sum(len(info.get("attempt_history", []))
                           for info in stages.values() if isinstance(info, dict))
@@ -211,6 +244,7 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
         "session": root.name,
         "checkpoint_updated_at": state.get("_updated_at"),
         "checkpoint_sha256": sha256_file(checkpoint) if checkpoint.is_file() else None,
+        "revision_round": revision_round,
         "decision": "accepted" if not failed else "rejected",
         "scope": "research-session evidence package; not publication peer review",
         "required_checks_passed": not failed,

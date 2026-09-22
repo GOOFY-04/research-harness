@@ -40,6 +40,14 @@ agents:
     entry_args: []
     enable_code_review: false
     require_metrics: true
+    required_metric_keys:
+      - proposed_primary
+      - baseline_primary
+      - improvement_delta
+      - sample_count
+    metric_constraints:
+      sample_count:
+        min: 30
 
 logging:
   level: "INFO"

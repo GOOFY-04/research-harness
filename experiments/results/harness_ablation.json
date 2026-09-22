@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-21T10:32:21.081415+00:00",
+  "generated_at": "2026-09-22T04:41:46.025751+00:00",
   "scope": "deterministic harness mechanism ablation; not a research-quality benchmark",
   "recovery_ablation": {
     "same_failed_prefix": true,
@@ -26,8 +26,8 @@
     "naive_completed_gate_accepts_weak_review": true,
     "strict_gate_accepts_weak_review": false,
     "review_checks": [
-      "review:recommendation",
-      "review:no-major-weaknesses"
+      "review:evidence-verdict",
+      "review:no-validity-blockers"
     ]
   }
 }

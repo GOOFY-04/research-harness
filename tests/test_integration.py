@@ -30,7 +30,9 @@ def test_default_eight_stage_cli_run_resume_and_reset(tmp_path, monkeypatch):
                           "related_work_draft":"A retrieved source."},
             "method":{"method_name":"Identity","overview":"Return the input","components":[],
                       "algorithm":"return x","method_section_draft":"Identity method."},
-            "reviewer":{"recommendation":"weak_reject","weaknesses":[],"revision_plan":[]},
+            "reviewer":{"recommendation":"weak_reject","evidence_verdict":"inconclusive",
+                        "claim_scope":"The smoke test only establishes executable identity behavior.",
+                        "weaknesses":[],"revision_plan":[]},
         }
         for name, output in fixed.items():
             monkeypatch.setattr(agents[name], "_call_llm", lambda prompt, output=output: json.dumps(output))

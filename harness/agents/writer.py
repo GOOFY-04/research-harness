@@ -1,10 +1,11 @@
 """Write an evidence-grounded draft with deterministic source bibliography."""
 import json
+import hashlib
 import logging
 import math
 import re
 from harness.core.agent import BaseAgent
-from harness.core.io import strip_outer_fence
+from harness.core.io import atomic_json, safe_path, strip_outer_fence
 
 
 def latex_escape(value):
@@ -62,7 +63,8 @@ def canonical_metric_facts(execution):
             continue
         numeric[key] = value
         fact = f"{key} = {value:.12g}"
-        if "improvement" in key.casefold() and abs(value) <= 1:
+        folded = key.casefold()
+        if (folded == "improvement" or "relative" in folded) and abs(value) <= 1:
             fact += f"; as a percentage = {value * 100:.6g}%"
         facts.append(fact)
     return numeric, facts
@@ -137,13 +139,53 @@ class WriterAgent(BaseAgent):
         for attempt in range(2):
             try:
                 return self._call_llm(prompt)
-            except (ConnectionError, OSError, RuntimeError, TimeoutError) as exc:
+            except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
                 message = str(exc).lower()
                 transient = any(token in message for token in
-                                ("timeout", "timed out", "connection", "temporarily", "unavailable"))
+                                ("timeout", "timed out", "connection", "temporarily", "unavailable",
+                                 "incomplete model response"))
                 if attempt or not transient:
                     raise
                 logging.warning("Writer sub-request failed; retrying once: %s", exc)
+
+    @staticmethod
+    def _draft_path(state, context):
+        session_dir = state.get("session_dir")
+        if not session_dir:
+            return None, None
+        digest = hashlib.sha256(("paper-draft-v1\n" + context).encode("utf-8")).hexdigest()
+        return safe_path(session_dir, f".drafts/paper_{digest[:20]}.json"), digest
+
+    @staticmethod
+    def _load_draft(path, digest):
+        if path is None or not path.is_file():
+            return None
+        try:
+            draft = json.loads(path.read_text(encoding="utf-8"))
+            if draft.get("context_sha256") != digest:
+                return None
+            meta, sections = draft.get("meta"), draft.get("sections", {})
+            if meta is not None and (not isinstance(meta, dict)
+                                     or not all(isinstance(meta.get(key), str) and meta[key].strip()
+                                                for key in ("title", "abstract"))):
+                return None
+            order = ["introduction", "related_work", "method", "experiments", "conclusion"]
+            if not isinstance(sections, dict) or list(sections) != order[:len(sections)]:
+                return None
+            for text in sections.values():
+                if not isinstance(text, str) or not text.strip():
+                    return None
+                validate_latex_structure(text)
+            return {"meta": meta, "sections": sections}
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _save_draft(path, digest, meta, sections):
+        if path is None:
+            return
+        atomic_json(path, {"schema_version": 1, "context_sha256": digest,
+                           "meta": meta, "sections": sections})
 
     def run(self, stage_id, inputs, state):
         sources, bibtex = bibliography(inputs.get("sources", []))
@@ -156,6 +198,8 @@ class WriterAgent(BaseAgent):
         context = json.dumps({**inputs, "sources": sources, "implementation": implementation,
                               "canonical_metric_facts": metric_facts},
                              ensure_ascii=False, indent=2)
+        draft_path, context_digest = self._draft_path(state, context)
+        draft = self._load_draft(draft_path, context_digest)
         rules = """Write in English. Every factual experimental claim must be supported by the supplied execution log.
 A smoke_test only validates code on synthetic inputs; it does not establish model quality.
 An entry_point execution is the bounded experiment itself. Do not call its reported metrics smoke-test results.
@@ -172,16 +216,24 @@ Label all missing experiments and result tables explicitly as TODO / not yet mea
 Use only the supplied citation keys. If none exist, do not cite.
 Use valid LaTeX with single backslashes; escape special characters.
 Use itemize/enumerate environments for lists. Do not introduce unavailable packages or figures."""
-        meta = self._parse_json(self._call_section(f"""{rules}
+        meta = draft.get("meta") if draft else None
+        sections = dict(draft.get("sections", {})) if draft else {}
+        if meta:
+            logging.info("[WriterAgent] resuming paper draft with metadata and %s/5 sections",
+                         len(sections))
+        else:
+            meta = self._parse_json(self._call_section(f"""{rules}
 Research evidence: {context}
 Return JSON with "title" (plain English text) and "abstract" (English LaTeX).
 The abstract must distinguish verified execution from planned experiments."""))
-        if meta.get("parse_error") or not all(isinstance(meta.get(k), str) and meta[k].strip()
-                                             for k in ("title", "abstract")):
-            raise ValueError("Invalid paper title/abstract")
-        sections = {}
+            if meta.get("parse_error") or not all(isinstance(meta.get(k), str) and meta[k].strip()
+                                                 for k in ("title", "abstract")):
+                raise ValueError("Invalid paper title/abstract")
+            self._save_draft(draft_path, context_digest, meta, sections)
         for key, title in [("introduction", "Introduction"), ("related_work", "Related Work"),
                            ("method", "Method"), ("experiments", "Experiments"), ("conclusion", "Conclusion")]:
+            if key in sections:
+                continue
             previous = "\n".join(sections.values())
             raw = self._call_section(f"""{rules}
 Research evidence: {context}
@@ -193,7 +245,9 @@ Use an optional latex fence around the complete response.""")
             section = normalize_latex_fragment(section)
             if not section.strip():
                 raise ValueError(f"Empty paper section: {key}")
+            validate_latex_structure(section)
             sections[key] = section
+            self._save_draft(draft_path, context_digest, meta, sections)
         body = "\n\n".join(f"\\section{{{name}}}\n{sections[key]}" for key, name in
                             [("introduction", "Introduction"), ("related_work", "Related Work"),
                              ("method", "Method"), ("experiments", "Experiments"), ("conclusion", "Conclusion")])

@@ -22,7 +22,8 @@ REVIEWER_SYSTEM = """你是一位顶级 AI 会议（NeurIPS/ICML/ICLR）的资�
 
 
 class ReviewerAgent(BaseAgent):
-    required_fields = {"weaknesses": list, "revision_plan": list, "recommendation": str}
+    required_fields = {"weaknesses": list, "revision_plan": list, "recommendation": str,
+                       "evidence_verdict": str, "claim_scope": str}
     model = "claude-opus-4-6"
     max_tokens = 4096
     use_extended_thinking = True
@@ -36,12 +37,16 @@ class ReviewerAgent(BaseAgent):
                   f"{original_direction}")
         implementation = inputs.get("implementation", [])
         source_evidence = []
-        remaining = 30000
+        remaining = 60000
         for item in implementation if isinstance(implementation, list) else []:
             if remaining <= 0 or not isinstance(item, dict):
                 break
-            content = str(item.get("content", ""))[:min(6000, remaining)]
-            source_evidence.append({"path": item.get("path"), "content": content})
+            original = str(item.get("content", ""))
+            limit = min(15000, remaining)
+            content = original[:limit]
+            source_evidence.append({"path": item.get("path"), "content": content,
+                                    "complete": len(content) == len(original),
+                                    "original_chars": len(original)})
             remaining -= len(content)
         if source_evidence:
             rq += ("\n\nExecuted implementation evidence (prefer this over early design hints):\n"
@@ -67,6 +72,9 @@ class ReviewerAgent(BaseAgent):
 真实代码执行报告（快速验证不等于完整实验）：
 {json.dumps(inputs.get('execution', {}), ensure_ascii=False)}
 
+源码证据中的 complete=false 只表示评审上下文预算发生裁剪，不表示实际文件不完整。
+不得因上下文裁剪声称源码缺失；只能把无法核验的具体实现列为 scope 限制。
+
 请从以下维度评分（1-10分）并给出详细意见，输出 JSON：
 {{
   "scores": {{
@@ -78,9 +86,11 @@ class ReviewerAgent(BaseAgent):
   }},
   "overall_score": 0,
   "recommendation": "accept|weak_accept|weak_reject|reject",
+  "evidence_verdict": "supported|contradicted|inconclusive|invalid",
+  "claim_scope": "一句话说明执行证据实际支持或反驳到什么范围，不得超出真实数据、任务和运行次数",
   "strengths": ["优点1", "优点2", "优点3"],
   "weaknesses": [
-    {{"issue": "问题描述", "severity": "major|minor", "suggestion": "改进建议"}}
+    {{"issue": "问题描述", "severity": "critical|major|minor", "category": "validity|scope|presentation", "suggestion": "改进建议"}}
   ],
   "questions": ["审稿人问题1", "审稿人问题2", "审稿人问题3"],
   "revision_plan": [
@@ -92,3 +102,15 @@ class ReviewerAgent(BaseAgent):
 
     def parse_output(self, raw_text: str, stage_id: str, inputs: dict) -> dict:
         return self._parse_json(raw_text)
+
+    def validate_output(self, output: dict) -> None:
+        super().validate_output(output)
+        if output["recommendation"] not in {"accept", "weak_accept", "weak_reject", "reject"}:
+            raise ValueError("Invalid publication recommendation")
+        if output["evidence_verdict"] not in {"supported", "contradicted", "inconclusive", "invalid"}:
+            raise ValueError("Invalid evidence verdict")
+        for weakness in output["weaknesses"]:
+            if (not isinstance(weakness, dict)
+                    or weakness.get("severity") not in {"critical", "major", "minor"}
+                    or weakness.get("category") not in {"validity", "scope", "presentation"}):
+                raise ValueError("Each weakness needs a valid severity and category")

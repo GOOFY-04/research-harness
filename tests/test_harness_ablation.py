@@ -17,4 +17,4 @@ def test_harness_mechanism_ablation_is_reproducible():
     assert evidence["tamper_checks"] == ["artifact:code/main.py"]
     assert evidence["naive_completed_gate_accepts_weak_review"]
     assert not evidence["strict_gate_accepts_weak_review"]
-    assert evidence["review_checks"] == ["review:recommendation", "review:no-major-weaknesses"]
+    assert evidence["review_checks"] == ["review:evidence-verdict", "review:no-validity-blockers"]

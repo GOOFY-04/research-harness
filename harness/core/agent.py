@@ -148,37 +148,53 @@ class BaseAgent(ABC):
         """
         import json, re
 
+        latex_commands = (
+            "alpha|beta|gamma|delta|epsilon|lambda|mu|phi|tau|sigma|nabla|"
+            "text|frac|sum|prod|mathcal|left|right|times|cdot|in|cup|emptyset|"
+            "sim|ge|le|Pi|begin|end|ref|rightarrow|leftarrow"
+        )
+
+        def load_json(candidate: str):
+            # Mathematical JSON from models often contains single-backslash
+            # LaTeX. Some commands fail JSON parsing (\alpha), while others
+            # silently become control characters (\beta, \nabla, \text).
+            repaired = re.sub(
+                rf"(?<!\\)\\(?=(?:{latex_commands})(?![A-Za-z]))",
+                lambda match: "\\" + match.group(0),
+                candidate,
+            )
+            repaired = re.sub(
+                r'(?<!\\)\\(?!["\\/bfnrtu])',
+                lambda match: "\\" + match.group(0),
+                repaired,
+            )
+            try:
+                value = json.loads(repaired)
+                return True, value
+            except json.JSONDecodeError:
+                return False, None
+
         text = strip_outer_fence(raw_text, ("json",))
 
         # 1. 剥离 markdown 代码围栏
         fence_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", text)
         if fence_match:
             candidate = fence_match.group(1).strip()
-            try:
-                value = json.loads(candidate)
-                if isinstance(value, dict):
-                    return value
-            except json.JSONDecodeError:
-                pass
+            parsed, value = load_json(candidate)
+            if parsed:
+                return value if isinstance(value, dict) else {"raw": raw_text, "parse_error": True}
 
         # 2. 直接尝试整段文本
-        try:
-            value = json.loads(text)
-            if isinstance(value, dict):
-                return value
-            return {"raw": raw_text, "parse_error": True}
-        except json.JSONDecodeError:
-            pass
+        parsed, value = load_json(text)
+        if parsed:
+            return value if isinstance(value, dict) else {"raw": raw_text, "parse_error": True}
 
         # 3. 提取最外层 {...}（贪婪匹配）
         brace_match = re.search(r"\{[\s\S]*\}", text)
         if brace_match:
-            try:
-                value = json.loads(brace_match.group())
-                if isinstance(value, dict):
-                    return value
-            except json.JSONDecodeError:
-                pass
+            parsed, value = load_json(brace_match.group())
+            if parsed and isinstance(value, dict):
+                return value
 
         return {"raw": raw_text, "parse_error": True}
 
