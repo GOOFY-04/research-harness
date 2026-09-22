@@ -217,6 +217,7 @@ def test_method_revision_prompt_requires_concrete_review_repairs():
     assert "不得只修改措辞或隐藏负面结果" in prompt
     assert "OldMethod" in prompt and '"score": 0.1' in prompt
     assert '"invariants"' in prompt and "单调方向" in prompt
+    assert "revision_response 必须至少包含 1 条" in prompt
 
     with pytest.raises(ValueError, match="revision_response"):
         MethodAgent().parse_output(json.dumps({"method_name": "Changed"}), "method_design", {
@@ -337,6 +338,29 @@ def test_revised_method_recovers_audit_feedback_from_checkpoint(tmp_path, monkey
 
     assert "上一候选被独立一致性审计拒绝" in prompts[0]
     assert "update sign is reversed" in prompts[0]
+
+
+def test_revised_method_simplifies_after_repeated_audit_failures(tmp_path, monkeypatch):
+    agent = MethodAgent()
+    method = {
+        "method_name": "Grid", "overview": "O", "components": [], "algorithm": "grid search",
+        "method_section_draft": "Draft", "revision_response": ["simplified"],
+        "invariants": [{"quantity": "alpha", "definition": "alpha in [0.01, 0.2]",
+                        "monotonic_effect": "larger alpha narrows the interval",
+                        "falsification_test": "enumerate the finite grid"}],
+    }
+    prompts = []
+    replies = iter([json.dumps(method), json.dumps({"valid": True, "issues": []})])
+    monkeypatch.setattr(agent, "_call_llm",
+                        lambda prompt: prompts.append(prompt) or next(replies))
+    agent.run("method_design", {"review_feedback": {"weaknesses": [
+        {"severity": "major", "issue": "unstable optimizer"},
+    ]}}, {"session_dir": str(tmp_path), "stages": {"method_design": {"errors": [
+        f"Method consistency audit failed: issue {index}" for index in range(3)
+    ]}}})
+
+    assert "必须降低算法复杂度" in prompts[0]
+    assert "有限候选或网格搜索" in prompts[0]
 
 
 def test_dependency_missing(monkeypatch):

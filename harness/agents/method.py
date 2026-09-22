@@ -36,6 +36,9 @@ class MethodAgent(BaseAgent):
         previous_execution = inputs.get("previous_execution")
         revision = ""
         if isinstance(review_feedback, dict):
+            blocker_count = sum(1 for item in review_feedback.get("weaknesses", [])
+                                if isinstance(item, dict)
+                                and item.get("severity") in {"critical", "major"})
             revision = f"""
 
 这是一次审稿驱动的修订。上一轮方法、执行证据和审稿意见如下：
@@ -49,6 +52,7 @@ class MethodAgent(BaseAgent):
 对于每个控制变量，必须核对其定义、单调方向和伪代码更新符号。经验分位数、
 指示函数等不可微算子不得被虚构为严格闭式梯度；若只能使用代理梯度、有限差分
 或渐近近似，必须如实命名并写出适用条件。
+revision_response 必须至少包含 {blocker_count} 条非空字符串，逐条对应 critical/major 问题。
 """
 
         return f"""请为以下研究问题设计一个创新性方法。
@@ -128,19 +132,29 @@ class MethodAgent(BaseAgent):
                         feedback_issues = issues
                 except (OSError, TypeError, json.JSONDecodeError):
                     pass
+            prior_errors = state.get("stages", {}).get(stage_id, {}).get("errors", [])
             if output is None and not feedback_issues:
-                prior_errors = state.get("stages", {}).get(stage_id, {}).get("errors", [])
-                last_audit_error = next((error for error in reversed(prior_errors)
-                                         if isinstance(error, str)
-                                         and error.startswith("Method consistency audit failed")), None)
-                if last_audit_error:
-                    feedback_issues = [{"severity": "major",
-                                        "contradiction": last_audit_error[:4000]}]
+                relevant_errors = [error for error in prior_errors
+                                   if isinstance(error, str) and (
+                                       error.startswith("Method consistency audit failed")
+                                       or error.startswith("Revised method must include"))]
+                feedback_issues = [{"severity": "major", "contradiction": error[:2000]}
+                                   for error in relevant_errors[-3:]]
             if output is None and feedback_issues:
                 prompt += f"""
 
 上一候选被独立一致性审计拒绝。重新设计时必须逐项修复以下问题，不能仅改写表述：
 {json.dumps(feedback_issues, ensure_ascii=False)[:4000]}
+"""
+            audit_failures = sum(1 for error in prior_errors if isinstance(error, str)
+                                 and error.startswith("Method consistency audit failed"))
+            if output is None and audit_failures >= 3:
+                prompt += """
+
+该阶段已连续多次因内部一致性失败。必须降低算法复杂度：优先直接使用有明确
+单调语义的原始参数、有限候选或网格搜索、以及可枚举验证的约束。除非能逐式
+证明更新方向，否则不要引入参数变换、代理梯度、拉格朗日乘子或耦合控制器。
+宁可缩小主张，也不要用未经验证的复杂机制维持原主张。
 """
         if output is None:
             output = self.parse_output(self._call_llm(prompt), stage_id, inputs)
