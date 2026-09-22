@@ -183,6 +183,8 @@ def test_reviewer_prefers_executed_source_over_early_design_hint():
     assert "import statistics" in prompt
     assert "standard library only" in prompt
     assert '"evidence_verdict": "supported|contradicted|inconclusive|invalid"' in prompt
+    assert "调用状态更新之前产生" in prompt
+    assert "evidence_verdict 设为 invalid" in prompt
 
 
 def test_reviewer_marks_context_truncation_without_calling_source_incomplete():
