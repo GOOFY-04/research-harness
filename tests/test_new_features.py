@@ -184,11 +184,33 @@ def test_method_revision_prompt_requires_concrete_review_repairs():
     assert "invalid baseline" in prompt and "replace baseline" in prompt
     assert "不得只修改措辞或隐藏负面结果" in prompt
     assert "OldMethod" in prompt and '"score": 0.1' in prompt
+    assert '"invariants"' in prompt and "单调方向" in prompt
 
     with pytest.raises(ValueError, match="revision_response"):
         MethodAgent().parse_output(json.dumps({"method_name": "Changed"}), "method_design", {
             "review_feedback": {"recommendation": "reject"},
         })
+
+
+def test_revised_method_runs_consistency_audit_before_coding(monkeypatch):
+    agent = MethodAgent()
+    method = {
+        "method_name": "M", "overview": "O", "components": [], "algorithm": "theta += 1",
+        "method_section_draft": "Draft", "revision_response": ["fixed direction"],
+        "invariants": [{"quantity": "theta", "definition": "theta in [0, 1]",
+                        "monotonic_effect": "larger theta narrows the interval",
+                        "falsification_test": "compare widths at theta=0 and theta=1"}],
+    }
+    replies = iter([json.dumps(method), json.dumps({
+        "valid": False, "issues": [{"severity": "critical", "invariant": "direction",
+                                      "contradiction": "update sign expands instead of narrows",
+                                      "repair": "reverse the sign"}],
+    })])
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: next(replies))
+    with pytest.raises(ValueError, match="update sign"):
+        agent.run("method_design", {"review_feedback": {
+            "weaknesses": [{"severity": "critical", "issue": "wrong direction"}],
+        }}, {})
 
 
 def test_dependency_missing(monkeypatch):

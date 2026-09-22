@@ -3,6 +3,7 @@ import ast
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from harness.core.agent import BaseAgent
 from harness.core.io import atomic_json, safe_path, strip_outer_fence
@@ -56,6 +57,31 @@ def execution_failure_context(output):
         "install_log": _tail(output.get("install_log")) if isinstance(output, dict) else "",
         "runs": runs,
     }
+
+
+def traceback_repair_plan(failure, generated_paths):
+    """Localize a Python traceback to its deepest generated project file."""
+    chunks = []
+    for run in failure.get("runs", []) if isinstance(failure, dict) else []:
+        if isinstance(run, dict):
+            chunks.extend((str(run.get("stdout", "")), str(run.get("stderr", ""))))
+    text = "\n".join(chunks)
+    frames = re.findall(r'File\s+["\']([^"\']+)["\'](?:,\s+line\s+\d+)?', text)
+    normalized = {path: path.replace("\\", "/") for path in generated_paths}
+    localized = []
+    for frame in frames:
+        frame = frame.replace("\\", "/")
+        for path, portable in normalized.items():
+            if frame == portable or frame.endswith("/" + portable):
+                localized.append(path)
+                break
+    if not localized:
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    diagnosis = lines[-1] if lines else "Python traceback in generated source"
+    return {"diagnosis": diagnosis, "files": [localized[-1]],
+            "dependencies": None, "regenerate_test": False,
+            "localization": "deepest_generated_traceback_frame"}
 
 
 def source_context(files, total_limit=60000, file_limit=16000):
@@ -370,43 +396,50 @@ Current interfaces:
 {json.dumps(interfaces(files), ensure_ascii=False, indent=2)}
 Current source:
 {json.dumps(sources, ensure_ascii=False, indent=2)}"""
-        last_plan_error = None
-        for plan_attempt in range(3):
-            plan = self._parse_json(self._call_repair(plan_prompt))
-            try:
-                selected = plan.get("files") if isinstance(plan, dict) else None
-                dependency_change = plan.get("dependencies") if isinstance(plan, dict) else None
-                regenerate_test = plan.get("regenerate_test", False) if isinstance(plan, dict) else False
-                if (not isinstance(selected, list) or len(selected) > 6
-                        or not all(isinstance(path, str) and path in by_path for path in selected)
-                        or len(set(selected)) != len(selected)):
-                    raise ValueError("files must be a unique list of at most six existing paths")
-                # Models commonly emit [] to mean no dependency change. A list
-                # of requirement strings is also safe to normalize deterministically.
-                if isinstance(dependency_change, list):
-                    if not all(isinstance(item, str) for item in dependency_change):
-                        raise ValueError("dependencies list must contain only strings")
-                    dependency_change = "\n".join(item.strip() for item in dependency_change if item.strip()) or None
-                if dependency_change is not None and not isinstance(dependency_change, str):
-                    raise ValueError("dependencies must be text, a string list, or null")
-                if not isinstance(regenerate_test, bool):
-                    raise ValueError("regenerate_test must be true or false")
-                install_enabled = failure.get("execution_policy", {}).get("install_dependencies")
-                if install_enabled is False and dependency_change is not None:
-                    raise ValueError("dependency installation is disabled; repair source files instead")
-                if dependency_change is not None:
-                    validate_dependencies(dependency_change, self.allowed_dependencies)
-                if not selected and dependency_change is None and not regenerate_test:
-                    raise ValueError("repair plan made no changes")
-                break
-            except (KeyError, TypeError, ValueError) as exc:
-                last_plan_error = exc
-                if plan_attempt == 2:
-                    raise ValueError(f"Invalid automatic repair plan: {exc}") from exc
-                plan_prompt += (f"\nYour previous plan was invalid: {exc}. "
-                                "Return a corrected JSON object matching the schema exactly.")
+        plan = traceback_repair_plan(failure, by_path)
+        if plan:
+            logger.info("[CoderAgent] traceback localized repair to %s", plan["files"][0])
+            selected = plan["files"]
+            dependency_change = None
+            regenerate_test = False
         else:
-            raise ValueError(f"Invalid automatic repair plan: {last_plan_error}")
+            last_plan_error = None
+            for plan_attempt in range(3):
+                plan = self._parse_json(self._call_repair(plan_prompt))
+                try:
+                    selected = plan.get("files") if isinstance(plan, dict) else None
+                    dependency_change = plan.get("dependencies") if isinstance(plan, dict) else None
+                    regenerate_test = plan.get("regenerate_test", False) if isinstance(plan, dict) else False
+                    if (not isinstance(selected, list) or len(selected) > 6
+                            or not all(isinstance(path, str) and path in by_path for path in selected)
+                            or len(set(selected)) != len(selected)):
+                        raise ValueError("files must be a unique list of at most six existing paths")
+                    # Models commonly emit [] to mean no dependency change. A list
+                    # of requirement strings is also safe to normalize deterministically.
+                    if isinstance(dependency_change, list):
+                        if not all(isinstance(item, str) for item in dependency_change):
+                            raise ValueError("dependencies list must contain only strings")
+                        dependency_change = "\n".join(item.strip() for item in dependency_change if item.strip()) or None
+                    if dependency_change is not None and not isinstance(dependency_change, str):
+                        raise ValueError("dependencies must be text, a string list, or null")
+                    if not isinstance(regenerate_test, bool):
+                        raise ValueError("regenerate_test must be true or false")
+                    install_enabled = failure.get("execution_policy", {}).get("install_dependencies")
+                    if install_enabled is False and dependency_change is not None:
+                        raise ValueError("dependency installation is disabled; repair source files instead")
+                    if dependency_change is not None:
+                        validate_dependencies(dependency_change, self.allowed_dependencies)
+                    if not selected and dependency_change is None and not regenerate_test:
+                        raise ValueError("repair plan made no changes")
+                    break
+                except (KeyError, TypeError, ValueError) as exc:
+                    last_plan_error = exc
+                    if plan_attempt == 2:
+                        raise ValueError(f"Invalid automatic repair plan: {exc}") from exc
+                    plan_prompt += (f"\nYour previous plan was invalid: {exc}. "
+                                    "Return a corrected JSON object matching the schema exactly.")
+            else:
+                raise ValueError(f"Invalid automatic repair plan: {last_plan_error}")
 
         changed = []
         before_hashes = {
@@ -458,6 +491,7 @@ Current complete file: {info['content']}"""
         history = list(previous_output.get("repair_history", []))
         history.append({
             "diagnosis": str(plan.get("diagnosis", "")),
+            "localization": plan.get("localization", "model_plan"),
             "changed_files": changed,
             "file_hashes": {
                 path: {

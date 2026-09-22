@@ -381,6 +381,36 @@ def test_coder_repairs_files_from_executor_feedback(tmp_path, monkeypatch):
     assert "assert value() == 3" in prompts[0]
 
 
+def test_coder_uses_deepest_traceback_frame_without_model_planning(tmp_path, monkeypatch):
+    agent = CoderAgent()
+    previous = {
+        "files": [
+            {"path": "pkg/model.py", "content": "def value():\n    return missing_name\n"},
+            {"path": "main.py", "content": "from pkg.model import value\nprint(value())\n"},
+        ],
+        "entry_point": "main.py", "dependencies": "", "run_instructions": "python main.py",
+        "test_snippet": "from pkg.model import value\nassert callable(value)",
+    }
+    prompts = []
+    monkeypatch.setattr(agent, "_call_llm",
+                        lambda prompt: prompts.append(prompt) or "def value():\n    return 3\n")
+    failure = {
+        "success": False, "error": "Generated program failed", "execution_kind": "entry_point",
+        "runs": [{"returncode": 1, "stdout": "", "stderr":
+                  'Traceback (most recent call last):\n'
+                  '  File "C:\\run\\main.py", line 2, in <module>\n'
+                  '  File "C:\\run\\pkg\\model.py", line 2, in value\n'
+                  "NameError: name 'missing_name' is not defined"}],
+    }
+
+    repaired = agent.repair("coding", previous, failure, {"session_dir": str(tmp_path)})
+
+    assert len(prompts) == 1
+    assert "Repair the COMPLETE python file pkg/model.py" in prompts[0]
+    assert repaired["files"][0]["content"].endswith("return 3")
+    assert repaired["repair_history"][0]["localization"] == "deepest_generated_traceback_frame"
+
+
 def test_coder_regenerates_smoke_test_when_it_guessed_the_wrong_contract(tmp_path, monkeypatch):
     agent = CoderAgent()
     previous = {

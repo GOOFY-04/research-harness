@@ -130,7 +130,9 @@ planning → literature → method_design → coding → code_execution
 
 只有结构校验通过且未返回 `success: false`、`error`、`parse_error` 的阶段才能完成。重试次数按每次调用计算，累计尝试次数和错误保存在 checkpoint；用 `resume` 可重新尝试耗尽重试或被中断的阶段。改变阶段定义、输入或发现无效缓存时会使相应阶段及下游失效。
 
-`code_execution` 默认把失败的子进程命令、返回码和截断日志反馈给 Coder。Coder 先生成最小修复计划，只重写计划中的已有文件，完整静态校验后更新 `coding` 检查点并重新执行。修复历史保存在 `coding.repair_history`，最多修复次数由执行阶段的 `max_retries` 控制。
+`code_execution` 默认把失败的子进程命令、返回码和截断日志反馈给 Coder。Python traceback 能定位到项目文件时，Coder 直接只重写最深故障帧对应的文件；无法确定定位时才生成最小修复计划。完整静态校验后更新 `coding` 检查点并重新执行。修复历史保存诊断、定位来源和文件前后哈希，最多修复次数由执行阶段的 `max_retries` 控制。
+
+审稿驱动修订在进入编码前必须列出变量定义、单调方向和可执行的不变量测试，并经过独立的方法一致性审计。审计会检查更新符号、投影方向、目标函数与梯度主张；存在 critical/major 内部矛盾时方法阶段失败并重试，验收报告也要求保存通过的审计记录。
 
 Coder 的 manifest、每个已验证文件和 smoke test 会按研究上下文写入 `.drafts/` 原子草稿；Writer 同样保存标题、摘要和每个已验证章节。模型请求超时或响应截断后，同一上下文只继续缺失文件或章节。对应阶段成功、手动重置或审稿修订时，草稿随旧产物归档，避免错误复用。CLI/TUI 会显示编码文件数与论文章节数。
 

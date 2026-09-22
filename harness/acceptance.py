@@ -163,14 +163,17 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     revision_history = metadata.get("revision_history", [])
     method_output = stages.get("method_design", {}).get("output", {})
     revision_response = method_output.get("revision_response") if isinstance(method_output, dict) else None
+    consistency_audit = method_output.get("consistency_audit") if isinstance(method_output, dict) else None
     revision_trace_ok = (
         isinstance(revision_round, int) and revision_round >= 0
         and isinstance(revision_history, list) and len(revision_history) == revision_round
-        and (revision_round == 0 or isinstance(revision_response, list) and bool(revision_response))
+        and (revision_round == 0 or isinstance(revision_response, list) and bool(revision_response)
+             and isinstance(consistency_audit, dict) and consistency_audit.get("valid") is True)
     )
     _check(checks, "trace:revision-lineage", "traceability", revision_trace_ok,
-           f"revision round {revision_round} has matching history and response" if revision_trace_ok
-           else "revision round, history, and method revision_response are inconsistent")
+           f"revision round {revision_round} has matching history, response, and method audit"
+           if revision_trace_ok else
+           "revision round, history, revision_response, and method audit are inconsistent")
 
     writing = stages.get("paper_writing", {}).get("output", {})
     writing = writing if isinstance(writing, dict) else {}

@@ -63,6 +63,8 @@ class ReviewerAgent(BaseAgent):
 方法概述：{method.get("overview", "")}
 核心洞察：{method.get("key_insight", "")}
 核心模块：{json.dumps(method.get("components", []), ensure_ascii=False)}
+设计不变量：{json.dumps(method.get("invariants", []), ensure_ascii=False)}
+方法一致性审计：{json.dumps(method.get("consistency_audit", {}), ensure_ascii=False)}
 
 研究空白（作者声称解决的）：
 {json.dumps(gaps[:3], ensure_ascii=False, indent=2)}

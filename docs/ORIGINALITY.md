@@ -1,6 +1,6 @@
 # Originality and overlap audit
 
-This document records a bounded comparison made on 2026-09-21. It does not
+This document records a bounded comparison updated on 2026-09-22. It does not
 claim that no unpublished or uninspected system has the same design. The links
 below are primary project documentation; claims are limited to behavior those
 projects publicly describe.
@@ -17,7 +17,7 @@ projects publicly describe.
 ## Narrow differentiated claim
 
 Research Harness currently differentiates itself through the integration of
-four mechanisms around a research checkpoint:
+six mechanisms around a research checkpoint:
 
 1. Dependency-aware stage invalidation and targeted code repair preserve valid
    upstream evidence while replacing affected downstream claims.
@@ -25,11 +25,19 @@ four mechanisms around a research checkpoint:
    `verified_metrics` and `evidence_scope` must exactly match the execution
    checkpoint instead of being reconstructed from prose.
 3. The acceptance gate distinguishes workflow completion from scientific
-   acceptance. It rejects failed metric policies, weak reviews, major unresolved
-   weaknesses, and exported artifacts that differ from checkpoint content.
+   acceptance and publication recommendation from evidence validity. A credible
+   negative result may pass, while inconclusive/invalid evidence and critical or
+   major validity weaknesses fail.
 4. `acceptance.json` binds that decision to the checkpoint SHA-256 and hashes
    every delivered artifact. The CLI/TUI marks the report stale after any later
    checkpoint mutation.
+5. Context-bound atomic drafts persist each validated source file and paper
+   section. Provider timeouts, truncated responses, and invalid LaTeX resume at
+   the missing item; the UI projects the same persisted progress.
+6. Review-guided revisions preserve lineage from criticism to method response.
+   Revised methods must state falsifiable invariants and pass a separate internal
+   consistency audit before expensive code generation; executed comparison
+   metrics then pass key, bound, and arithmetic checks before writing.
 
 The defensible claim is this integrated evidence contract and its observable
 failure behavior. We do not claim invention of autonomous research, multi-agent
@@ -51,7 +59,8 @@ while either tampering with an exported file or inserting a weak review. A
 status-only gate accepts both packages, while the strict gate rejects them and
 names the violated checks.
 
-This experiment validates the claimed mechanics. It does not establish better
-research quality, lower real-model cost, or uniqueness across the entire open
-source ecosystem. Those claims require multi-project benchmarks and more than
-one real research run.
+This experiment validates the stage-level recovery and deterministic evidence
+gate mechanics. Item-level draft recovery, revision audits, and real-model cost
+still require separate logged evaluations. It does not establish better research
+quality or uniqueness across the entire open source ecosystem; those claims
+require multi-project benchmarks and more than one real research run.

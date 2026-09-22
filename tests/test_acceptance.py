@@ -123,5 +123,8 @@ def test_revision_requires_traceable_history_and_method_response(tmp_path):
     assert "trace:revision-lineage" in report["failed_required_checks"]
 
     state["stages"]["method_design"]["output"]["revision_response"] = ["fixed baseline"]
+    state["stages"]["method_design"]["output"]["consistency_audit"] = {
+        "valid": True, "issues": [],
+    }
     report = evaluate_session(tmp_path, state, STAGES)
     assert "trace:revision-lineage" not in report["failed_required_checks"]
