@@ -12,6 +12,7 @@ from harness.core.io import safe_path
 from harness.core.skill import get_global_registry
 from harness.tools.code_runner import write_code_files
 from harness.tools.process import run_command
+from harness.tools.execution_evidence import verify_execution_evidence
 from harness.tools.metrics import flatten_numeric_metrics, parse_metric_line
 from harness.tools.validation import (metric_constraint_errors, validate_dependencies,
                                       validate_files, validate_imports,
@@ -79,14 +80,19 @@ class ExecutorAgent(BaseAgent):
         if test:
             compile(test, "<test_snippet>", "exec")
         deadline = monotonic() + min(self.timeout, inputs.get("_timeout", self.timeout))
-        def execute(command, cwd):
+        def execute(command, cwd, role):
             remaining = deadline - monotonic()
             if remaining <= 0:
                 return {"success": False, "stdout": "", "stderr": "Execution deadline exceeded",
                         "returncode": -1, "timed_out": True, "command": command}
-            return run_command(command, cwd, remaining)
+            result = run_command(command, cwd, remaining, log_dir=log_dir)
+            for record in result.get("logs", {}).values():
+                record["path"] = Path(record["path"]).relative_to(session).as_posix()
+            result["role"] = role
+            return result
         # Fresh directory prevents stale files from earlier generations affecting imports.
         code_dir = Path(tempfile.mkdtemp(prefix="execution_", dir=session))
+        log_dir = Path(tempfile.mkdtemp(prefix="process_logs_", dir=session))
         write_code_files(files, code_dir)
         (code_dir / "requirements.txt").write_text(dependencies, encoding="utf-8")
         python = self.python_executable
@@ -95,22 +101,24 @@ class ExecutorAgent(BaseAgent):
             environment = safe_path(session, ".venv")
             python = str(environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
             if not Path(python).exists():
-                setup = execute([self.python_executable, "-m", "venv", str(environment)], session)
+                setup = execute([self.python_executable, "-m", "venv", str(environment)], session, "environment")
+                runs.append(setup)
                 install_log += setup["stdout"] + setup["stderr"]
                 if not setup["success"]:
-                    return self._report(False, code_dir, install_log, [], "environment", "Virtualenv creation failed")
+                    return self._report(False, code_dir, install_log, runs, "environment", "Virtualenv creation failed")
             install = execute([python, "-m", "pip", "install", "--disable-pip-version-check",
-                               "-r", str(code_dir / "requirements.txt")], code_dir)
+                               "-r", str(code_dir / "requirements.txt")], code_dir, "installation")
+            runs.append(install)
             install_log += install["stdout"] + install["stderr"]
             if not install["success"]:
-                return self._report(False, code_dir, install_log, [], "installation", "Dependency installation failed")
+                return self._report(False, code_dir, install_log, runs, "installation", "Dependency installation failed")
         if test:
             # Reserve a name instead of overwriting a generated file.
             test_path = code_dir / "_harness_quick_test.py"
             if test_path.exists():
                 raise ValueError("Generated files use reserved _harness_quick_test.py")
             test_path.write_text(test, encoding="utf-8")
-            runs.append(execute([python, str(test_path)], code_dir))
+            runs.append(execute([python, str(test_path)], code_dir, "smoke_test"))
         kind = "smoke_test" if test else "entry_point"
         if (self.run_entry_point or not test) and (not runs or runs[-1]["success"]):
             if not entry:
@@ -118,7 +126,7 @@ class ExecutorAgent(BaseAgent):
             entry_path = safe_path(code_dir, entry)
             if not entry_path.is_file() or entry_path.suffix != ".py":
                 raise ValueError("entry_point must name an existing Python file")
-            runs.append(execute([python, str(entry_path), *self.entry_args], code_dir))
+            runs.append(execute([python, str(entry_path), *self.entry_args], code_dir, "entry_point"))
             kind = "entry_point"
         success = bool(runs) and all(run["success"] for run in runs)
         output = self._report(success, code_dir, install_log, runs, kind,
@@ -177,6 +185,12 @@ class ExecutorAgent(BaseAgent):
             raise ValueError("Cached HARNESS_METRICS violates comparison contract: "
                              + "; ".join(violations))
 
+    def validate_artifacts(self, output, session_dir):
+        if output.get("success") is True:
+            evidence_errors, _ = verify_execution_evidence(session_dir, output)
+            if evidence_errors:
+                raise ValueError("Execution evidence is invalid: " + "; ".join(evidence_errors))
+
     def _report(self, success, code_dir, install_log, runs, kind, error=""):
         log = "\n".join(run["stdout"] + run["stderr"] for run in runs)
         metrics = {}
@@ -199,7 +213,7 @@ class ExecutorAgent(BaseAgent):
                       if kind == "smoke_test" else "See command logs for execution scope."))
         return {"success": success, "error": error, "code_dir": str(code_dir),
                 "install_log": install_log, "test_log": log, "test_success": success,
-                "execution_kind": kind, "runs": runs,
+                "execution_kind": kind, "runs": runs, "evidence_version": 1,
                 "execution_policy": {
                     "install_dependencies": self.install_dependencies,
                     "run_entry_point": self.run_entry_point,

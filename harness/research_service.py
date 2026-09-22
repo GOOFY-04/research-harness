@@ -17,7 +17,7 @@ from uuid import uuid4
 from harness.core.checkpoint import CheckpointManager
 from harness.core.io import atomic_json, file_lock, safe_path
 from harness.core.workflow import WorkflowEngine
-from harness.acceptance import sha256_file
+from harness.acceptance import sha256_file, ACCEPTANCE_POLICY_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = 1
@@ -168,7 +168,8 @@ class ResearchService:
         if acceptance_path.is_file():
             try:
                 saved = json.loads(acceptance_path.read_text(encoding="utf-8"))
-                stale = (saved.get("checkpoint_updated_at") != state.get("_updated_at")
+                stale = (saved.get("policy_version") != ACCEPTANCE_POLICY_VERSION
+                         or saved.get("checkpoint_updated_at") != state.get("_updated_at")
                          or saved.get("checkpoint_sha256") != sha256_file(cp.checkpoint_file))
                 acceptance = {
                     "decision": "stale" if stale else saved.get("decision", "not_evaluated"),

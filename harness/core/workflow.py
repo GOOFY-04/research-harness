@@ -300,6 +300,8 @@ class WorkflowEngine:
         agent = self.agents.get(stage.agent)
         if agent is not None and hasattr(agent, "validate_output"):
             agent.validate_output(output)
+        if agent is not None and hasattr(agent, "validate_artifacts"):
+            agent.validate_artifacts(output, self.checkpoint.session_dir)
 
     # ------------------------------------------------------------------
     # 工具方法

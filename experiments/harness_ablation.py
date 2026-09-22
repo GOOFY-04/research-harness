@@ -90,6 +90,7 @@ def recovery_ablation(root: Path) -> dict:
 
 
 def _evidence_fixture(root: Path) -> dict:
+    from harness.agents.executor import ExecutorAgent
     outputs = {
         "planning": {"novelty_hypothesis": "A falsifiable difference"},
         "literature": {"sources": [{"title": "Source", "arxiv_id": "2401.00001"}]},
@@ -110,7 +111,15 @@ def _evidence_fixture(root: Path) -> dict:
              "stages": {stage: {"status": "done", "output": outputs[stage]} for stage in STAGES}}
     (root / "code").mkdir(parents=True)
     (root / "output").mkdir()
-    (root / "code/main.py").write_text("print('ok')\n", encoding="utf-8")
+    source = 'print(\'HARNESS_METRICS={"score": 0.75}\')\n'
+    outputs["coding"]["files"][0]["content"] = source
+    policy = outputs["code_execution"]["execution_policy"]
+    outputs["code_execution"] = ExecutorAgent(install_dependencies=False).run(
+        "code_execution", {**outputs["coding"], "entry_point": "main.py"},
+        {"session_dir": str(root)})
+    outputs["code_execution"]["execution_policy"] = policy
+    state["stages"]["code_execution"]["output"] = outputs["code_execution"]
+    (root / "code/main.py").write_text(source, encoding="utf-8")
     (root / "code/requirements.txt").write_text("", encoding="utf-8")
     (root / "output/paper.tex").write_text("paper\n", encoding="utf-8")
     (root / "output/references.bib").write_text("refs\n", encoding="utf-8")
@@ -123,7 +132,8 @@ def evidence_ablation(root: Path) -> dict:
     clean = evaluate_session(root, state, STAGES)
     (root / "code/main.py").write_text("print('tampered')\n", encoding="utf-8")
     tampered = evaluate_session(root, state, STAGES)
-    (root / "code/main.py").write_text("print('ok')\n", encoding="utf-8")
+    (root / "code/main.py").write_text(
+        state["stages"]["coding"]["output"]["files"][0]["content"], encoding="utf-8")
     state["stages"]["self_review"]["output"] = {
         "recommendation": "weak_reject",
         "evidence_verdict": "invalid", "claim_scope": "invalid baseline",

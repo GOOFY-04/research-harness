@@ -15,10 +15,12 @@ from typing import Any
 
 from .core.io import safe_path
 from .tools.validation import comparison_metric_errors
+from .tools.execution_evidence import verify_execution_evidence
 from .agents.method_audit import verify_record
 
 
 APPROVED_RECOMMENDATIONS = {"accept", "weak_accept"}
+ACCEPTANCE_POLICY_VERSION = 2
 
 
 def _check(checks: list[dict[str, Any]], check_id: str, category: str,
@@ -127,6 +129,11 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     _check(checks, "execution:real-entry-point", "execution",
            execution.get("execution_kind") == "entry_point",
            f"execution kind is {execution.get('execution_kind', 'missing')!r}")
+    evidence_errors, log_manifest = verify_execution_evidence(root, execution)
+    _check(checks, "execution:archived-evidence", "traceability", not evidence_errors,
+           "; ".join(evidence_errors) if evidence_errors else
+           "archived stdout/stderr hashes and entry-point metrics verified")
+    manifest.extend(log_manifest)
     metrics = _numeric_metrics(execution.get("analysis", {}).get("metrics"))
     _check(checks, "execution:numeric-metrics", "execution", bool(metrics),
            f"{len(metrics)} numeric metrics persisted" if metrics else "no numeric metrics persisted")
@@ -251,6 +258,7 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
     checkpoint = root / "checkpoint.json"
     return {
         "schema_version": 1,
+        "policy_version": ACCEPTANCE_POLICY_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session": root.name,
         "checkpoint_updated_at": state.get("_updated_at"),

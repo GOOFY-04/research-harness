@@ -68,6 +68,7 @@ python main.py run --direction "新的研究方向" --session my_research --no-r
 - 同一 session 的 CLI 写操作使用进程锁，避免并发覆盖。
 - `accept` 离线复核工作流、真实入口执行、指标策略、论文指标追溯、审稿意见和导出产物；`--write-report` 生成带 SHA-256 产物清单的 `acceptance.json`。验收失败时退出码为 1，并逐项说明原因。
 - 每次流程结束都会刷新 `acceptance.json`；Evidence 页面显示验收结论和失败检查数。checkpoint 后续发生变化时，旧报告显示为 `stale`，不能继续作为当前证据。
+- 执行器将完整 stdout/stderr 保存到会话的 `process_logs_*` 目录；界面仍显示有长度限制的日志尾部。离线验收检查日志字节数、SHA-256，并从正式入口的原始 stdout 重新提取指标，防止截断或缓存指标替代实际输出。旧版缺少归档的会话需要重跑 `code_execution`；升级验收策略后旧报告显示为 `stale`。这些哈希用于一致性检查，不是签名，也不能证明实验设计正确。
 - CLI 的 `repair` 只重新解析保存的原始 JSON，不调用模型；代码执行失败时的自动修复由工作流中的 `repair_from: coding` 单独控制。
 
 ## OpenCode 接入

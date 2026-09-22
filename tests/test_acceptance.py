@@ -1,6 +1,7 @@
 import json
 
 from harness.acceptance import evaluate_session, write_report
+from harness.agents.executor import ExecutorAgent
 
 
 STAGES = ["planning", "literature", "method_design", "coding", "code_execution",
@@ -38,9 +39,18 @@ def completed_state():
 
 
 def export_fixture(tmp_path, state):
-    (tmp_path / "code").mkdir()
-    (tmp_path / "output").mkdir()
-    (tmp_path / "code/main.py").write_text("print('ok')\n", encoding="utf-8")
+    outputs = {key: value["output"] for key, value in state["stages"].items()}
+    metrics = outputs["code_execution"]["analysis"]["metrics"]
+    source = "print(" + repr("HARNESS_METRICS=" + json.dumps(metrics)) + ")\n"
+    outputs["coding"]["files"][0]["content"] = source
+    policy = outputs["code_execution"]["execution_policy"]
+    outputs["code_execution"].update(ExecutorAgent(install_dependencies=False).run(
+        "code_execution", {**outputs["coding"], "entry_point": "main.py"},
+        {"session_dir": str(tmp_path)}))
+    outputs["code_execution"]["execution_policy"] = policy
+    (tmp_path / "code").mkdir(exist_ok=True)
+    (tmp_path / "output").mkdir(exist_ok=True)
+    (tmp_path / "code/main.py").write_text(source, encoding="utf-8")
     (tmp_path / "code/requirements.txt").write_text("", encoding="utf-8")
     (tmp_path / "output/paper.tex").write_text("paper\n", encoding="utf-8")
     (tmp_path / "output/references.bib").write_text("refs\n", encoding="utf-8")
@@ -55,7 +65,7 @@ def test_complete_traceable_session_is_accepted(tmp_path):
 
     assert report["decision"] == "accepted"
     assert report["required_checks_passed"] is True
-    assert len(report["artifact_manifest"]) == 5
+    assert len(report["artifact_manifest"]) == 7
     assert all(len(item["sha256"]) == 64 for item in report["artifact_manifest"])
     recovery = next(item for item in report["checks"] if item["id"] == "recovery:trace")
     assert recovery["required"] is False and recovery["passed"] is False
@@ -93,6 +103,20 @@ def test_acceptance_report_is_machine_readable(tmp_path):
     assert saved["session"] == tmp_path.name
 
 
+def test_acceptance_requires_original_process_evidence(tmp_path):
+    state = completed_state()
+    export_fixture(tmp_path, state)
+    execution = state["stages"]["code_execution"]["output"]
+    log = execution["runs"][-1]["logs"]["stdout"]
+    (tmp_path / log["path"]).write_text('HARNESS_METRICS={"score": 0.95}\n')
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "execution:archived-evidence" in report["failed_required_checks"]
+    execution.pop("evidence_version")
+    report = evaluate_session(tmp_path, state, STAGES)
+    check = next(x for x in report["checks"] if x["id"] == "execution:archived-evidence")
+    assert not check["passed"] and "rerun code_execution" in check["detail"]
+
+
 def test_acceptance_enforces_standard_comparison_arithmetic(tmp_path):
     state = completed_state()
     metrics = {"proposed_primary": 0.8, "baseline_primary": 0.7,
@@ -109,6 +133,8 @@ def test_acceptance_enforces_standard_comparison_arithmetic(tmp_path):
     assert "execution:comparison-contract" in report["failed_required_checks"]
 
     metrics["improvement_delta"] = 0.1
+    execution["analysis"]["metrics"] = metrics
+    export_fixture(tmp_path, state)
     report = evaluate_session(tmp_path, state, STAGES)
     assert "execution:comparison-contract" not in report["failed_required_checks"]
 

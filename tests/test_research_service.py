@@ -124,9 +124,11 @@ def test_snapshot_exposes_pending_method_audit(service):
 
 
 def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(service):
+    from harness.acceptance import ACCEPTANCE_POLICY_VERSION
     cp = checkpoint(service)
     state = cp.load()
-    report = {"decision": "rejected", "failed_required_checks": ["execution:succeeded"],
+    report = {"decision": "rejected", "policy_version": ACCEPTANCE_POLICY_VERSION,
+              "failed_required_checks": ["execution:succeeded"],
               "checkpoint_updated_at": state["_updated_at"],
               "checkpoint_sha256": sha256_file(cp.checkpoint_file)}
     (cp.session_dir / "acceptance.json").write_text(json.dumps(report), encoding="utf-8")
@@ -139,6 +141,17 @@ def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(servic
     view = service.handle({"action": "status", "session": "study"})
     assert view["acceptance"]["decision"] == "stale"
     assert view["acceptance"]["stale"] is True
+
+
+def test_snapshot_marks_previous_acceptance_policy_stale(service):
+    cp = checkpoint(service)
+    state = cp.load()
+    report = {"decision": "accepted", "failed_required_checks": [],
+              "checkpoint_updated_at": state["_updated_at"],
+              "checkpoint_sha256": sha256_file(cp.checkpoint_file)}
+    (cp.session_dir / "acceptance.json").write_text(json.dumps(report), encoding="utf-8")
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["acceptance"]["decision"] == "stale"
 
 
 def test_stage_output_exposes_persisted_result_without_mutating_checkpoint(service):

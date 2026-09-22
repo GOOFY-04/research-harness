@@ -176,7 +176,7 @@ def test_failed_test_does_not_run_entry(tmp_path):
 def test_install_failure_stops_execution(tmp_path, monkeypatch):
     import harness.agents.executor as module
     calls = []
-    def fake(command, cwd, timeout):
+    def fake(command, cwd, timeout, **kwargs):
         calls.append(command)
         return {"success":False,"stdout":"","stderr":"install failed","returncode":1}
     monkeypatch.setattr(module, "run_command", fake)
