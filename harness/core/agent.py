@@ -5,6 +5,7 @@ BaseAgent — 所有专职 agent 的抽象基类
 BaseAgent 负责调用 Claude API、重试、记忆读写、日志。
 """
 
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -94,6 +95,19 @@ class BaseAgent(ABC):
 
         # 构建 prompt
         prompt = self.build_prompt(stage_id, inputs, state)
+        history = state.get("stages", {}).get(stage_id, {}).get("attempt_history", [])
+        previous = next((item for item in reversed(history)
+                         if isinstance(item, dict) and isinstance(item.get("output"), dict)
+                         and item.get("error")), {})
+        if isinstance(previous.get("output"), dict) and previous.get("error"):
+            excerpt = json.dumps(previous["output"], ensure_ascii=False)[:6000]
+            prompt += (
+                f"\n\nPrevious response failed validation: {str(previous['error'])[:1000]}\n"
+                "Correct the response using the required schema above. Preserve scientific criticism "
+                "and measured evidence; do not weaken findings merely to satisfy the schema. "
+                "Return the complete corrected response.\n"
+                f"Previous invalid response (bounded excerpt): {excerpt}"
+            )
 
         # 调用 LLM
         raw = self._call_llm(prompt)

@@ -212,6 +212,44 @@ def test_reviewer_separates_evidence_validity_from_publication_recommendation():
         agent.validate_output(output)
 
 
+def test_reviewer_retry_receives_schema_failure_without_erasing_criticism(tmp_path, monkeypatch):
+    import yaml
+    from harness.core.checkpoint import CheckpointManager
+    from harness.core.workflow import WorkflowEngine
+
+    workflow = tmp_path / "review.yaml"
+    workflow.write_text(yaml.safe_dump({"name": "review", "stages": [
+        {"id": "self_review", "agent": "reviewer", "max_retries": 1}]}), encoding="utf-8")
+    invalid = {"recommendation": "reject", "evidence_verdict": "invalid",
+               "claim_scope": "The baseline is defective.", "revision_plan": [],
+               "weaknesses": [{"issue": "baseline never updates", "severity": "major",
+                               "category": "technical_soundness", "suggestion": "fix update"}]}
+    corrected = {**invalid, "weaknesses": [{**invalid["weaknesses"][0], "category": "validity"}]}
+    prompts = []
+    replies = iter([json.dumps(invalid), TimeoutError("provider timed out"), json.dumps(corrected)])
+    agent = ReviewerAgent()
+    def respond(prompt):
+        prompts.append(prompt)
+        value = next(replies)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    monkeypatch.setattr(agent, "_call_llm", respond)
+    cp = CheckpointManager(tmp_path / "sessions", "review")
+    state = WorkflowEngine(workflow, cp, {"reviewer": agent}).run()
+    assert state["status"] == "failed"
+    state = WorkflowEngine(workflow, cp, {"reviewer": agent}).run()
+    output = state["stages"]["self_review"]["output"]
+    assert state["status"] == "completed"
+    assert output["evidence_verdict"] == "invalid"
+    assert output["weaknesses"][0]["issue"] == "baseline never updates"
+    assert "Each weakness needs a valid severity and category" in prompts[1]
+    assert "technical_soundness" in prompts[1]
+    assert "do not weaken findings" in prompts[1]
+    assert "Each weakness needs a valid severity and category" in prompts[2]
+    assert cp.load()["stages"]["self_review"]["attempt_history"][0]["output"] == invalid
+
+
 def test_method_revision_prompt_requires_concrete_review_repairs():
     prompt = MethodAgent().build_prompt("method_design", {
         "research_question": "Does it work?",
