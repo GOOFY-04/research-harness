@@ -59,6 +59,21 @@ def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     assert view["method_draft_progress"] is None
 
 
+def test_snapshot_compacts_errors_but_checkpoint_keeps_full_text(service):
+    cp = checkpoint(service)
+    state = cp.load()
+    full = "math contradiction " * 100
+    state["stages"]["code_execution"]["error"] = full
+    state["stages"]["code_execution"]["errors"] = [full]
+    cp.save(state)
+
+    view = service.handle({"action": "status", "session": "study"})
+    stage = next(item for item in view["stages"] if item["id"] == "code_execution")
+    assert len(stage["error"]) < len(full)
+    assert stage["error"].endswith("...<see logs>")
+    assert cp.load()["stages"]["code_execution"]["error"] == full
+
+
 def test_snapshot_exposes_coding_draft_progress(service):
     cp = checkpoint(service, "running")
     state = cp.load()

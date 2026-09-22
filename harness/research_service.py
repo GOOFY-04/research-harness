@@ -24,6 +24,13 @@ VERSION = 1
 MUTATIONS = {"run", "resume", "repair", "revise", "reset-stage"}
 
 
+def compact_message(value, limit=600):
+    if value is None:
+        return None
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "...<see logs>"
+
+
 def parse_request(raw: bytes):
     """Decode JSON from shells that may prefix UTF-8 input with a BOM."""
     request = json.loads(raw.decode("utf-8-sig"))
@@ -81,7 +88,8 @@ class ResearchService:
             errors = info.get("errors") if isinstance(info.get("errors"), list) else []
             stages.append({"id": stage.id, "name": stage.name, "status": info.get("status", "pending"),
                            "depends_on": stage.depends_on, "attempts": info.get("attempts", 0),
-                           "error": info.get("error"), "last_error": errors[-1] if errors else None,
+                           "error": compact_message(info.get("error")),
+                           "last_error": compact_message(errors[-1]) if errors else None,
                            "started_at": info.get("started_at"), "repair_from": stage.repair_from})
         execution = state["stages"].get("code_execution", {})
         output = execution.get("output") or {}
@@ -140,6 +148,9 @@ class ResearchService:
             except (OSError, ValueError, TypeError, KeyError):
                 pass
         active = job and job["status"] in ("running", "queued")
+        job_view = dict(job) if job else None
+        if job_view and "error" in job_view:
+            job_view["error"] = compact_message(job_view["error"])
         status = state.get("status", "pending")
         if status == "running" and not active:
             # A CLI outside this service may also own the session.
@@ -167,7 +178,7 @@ class ResearchService:
                               "report": str(acceptance_path), "stale": False}
         return {"session": session, "direction": state.get("metadata", {}).get("research_direction", ""),
                 "status": status, "current_stage": state.get("current_stage"), "stages": stages,
-                "job": job, "metrics": metrics, "artifacts": artifacts, "review": review,
+                "job": job_view, "metrics": metrics, "artifacts": artifacts, "review": review,
                 "evidence_verdict": review_output.get("evidence_verdict"),
                 "evidence": {"execution_kind": output.get("execution_kind", "not_run"),
                              "execution_passed": execution.get("status") == "done" and output.get("success") is True,
