@@ -232,6 +232,7 @@ def test_method_revision_prompt_requires_concrete_review_repairs():
     assert '"invariants"' in prompt and "单调方向" in prompt
     assert "revision_response 必须至少包含 1 条" in prompt
     assert "时刻 t 的预测只能使用截至 t-1 的信息" in prompt
+    assert "保守回退选最小 alpha" in prompt
 
     with pytest.raises(ValueError, match="revision_response"):
         MethodAgent().parse_output(json.dumps({"method_name": "Changed"}), "method_design", {
@@ -260,6 +261,7 @@ def test_revised_method_runs_consistency_audit_before_coding(monkeypatch):
             "weaknesses": [{"severity": "critical", "issue": "wrong direction"}],
         }}, {})
     assert "使用当前或未来标签选参" in prompts[1]
+    assert "最窄的可行解应选满足覆盖约束的最大 alpha" in prompts[1]
 
 
 def test_revised_method_reuses_candidate_after_audit_timeout(tmp_path, monkeypatch):
