@@ -43,6 +43,7 @@ def test_config_independent_of_working_directory(tmp_path, monkeypatch):
     agents = main.build_agent_registry(cfg, None)
     assert agents["method"].model == "agnes-3.0-flash"
     assert agents["method"]._llm.protocol == "openai_compatible"
+    assert agents["method"]._llm.stream_responses is True
     assert agents["method"].use_extended_thinking is False
     assert agents["planner"].max_tokens == 3072
     assert agents["literature"].max_tokens == 8192

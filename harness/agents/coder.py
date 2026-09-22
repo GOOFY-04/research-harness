@@ -95,7 +95,10 @@ def metric_contract_repair_plan(failure, entry_point, generated_paths):
     detail = error
     if error.startswith("Entry point completed without"):
         detail += (". Print exactly one final line with the literal prefix HARNESS_METRICS= "
-                   "followed immediately by a JSON object; a space instead of '=' is invalid")
+                   "followed immediately by a JSON object; a space instead of '=' is invalid. "
+                   "Preserve and emit all already computed numeric results for every method, "
+                   "including secondary metrics; the required keys are a minimum, not a replacement "
+                   "for the existing results. Nested numeric objects are supported")
     return {"diagnosis": detail, "files": [entry_point], "dependencies": None,
             "regenerate_test": False, "localization": "metric_contract_entry_point"}
 
@@ -340,6 +343,8 @@ The entry point will be executed by the harness as a bounded end-to-end experime
 - print one final line beginning HARNESS_METRICS= followed by a JSON object of numeric metrics,
   including proposed and baseline scores plus an improvement/delta where meaningful;
 - include every configured metric key: {json.dumps(self.required_metric_keys, ensure_ascii=False)};
+- also emit the computed secondary metrics and all compared methods in the same JSON object
+  (nested numeric objects are supported); required keys are a minimum, not the complete results;
 - when proposed_primary, baseline_primary, improvement_delta and sample_count are configured, use the
   same directly observed primary metric for proposed_primary and baseline_primary, define
   improvement_delta = proposed_primary - baseline_primary (a signed raw difference, not a percentage),
@@ -403,6 +408,7 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
                     validate_imports(import_context, self.allowed_dependencies)
                     break
                 except (ValueError, SyntaxError) as exc:
+                    logger.warning("[CoderAgent] invalid file %s (attempt %s/3): %s", path, attempt + 1, exc)
                     if attempt == 2:
                         raise
                     prompt += f"\nPrevious output was invalid: {exc}. Regenerate the complete file."
@@ -548,6 +554,7 @@ Current complete file: {info['content']}"""
                     validate_file(path, content)
                     break
                 except (ValueError, SyntaxError) as exc:
+                    logger.warning("[CoderAgent] invalid file %s (attempt %s/3): %s", path, attempt + 1, exc)
                     if attempt == 2:
                         raise
                     prompt += f"\nThe replacement was invalid: {exc}. Return the corrected complete file."

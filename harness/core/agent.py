@@ -47,6 +47,7 @@ class BaseAgent(ABC):
         client=None,
         protocol: str = "anthropic",
         api_key_env: Optional[str] = None,
+        stream_responses: bool = False,
     ):
         self.memory = memory
         self.use_extended_thinking = (getattr(type(self), "use_extended_thinking", False)
@@ -71,7 +72,8 @@ class BaseAgent(ABC):
             )
         self._llm = LLMClient(api_key=resolved_key, base_url=base_url,
                               timeout=request_timeout, client=client,
-                              protocol=protocol, api_key_env=api_key_env)
+                              protocol=protocol, api_key_env=api_key_env,
+                              stream_responses=stream_responses)
 
         # 从环境变量读取模型别名（允许在 .env 中统一覆盖）
         self.model = model or (self._llm.model if protocol == "openai_compatible" else (

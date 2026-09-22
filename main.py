@@ -71,7 +71,8 @@ def build_agent_registry(config, memory):
         options = dict(memory=memory, api_key=provider.get("api_key") or None,
                        base_url=provider.get("base_url"), request_timeout=provider.get("timeout", 120),
                        protocol=provider.get("protocol", "anthropic"),
-                       api_key_env=provider.get("api_key_env"))
+                       api_key_env=provider.get("api_key_env"),
+                       stream_responses=provider.get("stream", False))
         common_model = provider.get("default_model")
         if common_model:
             options["model"] = common_model
