@@ -11,9 +11,11 @@ MethodAgent — 方法设计
 """
 
 import json
+import hashlib
 import re
 
 from harness.core.agent import BaseAgent
+from harness.core.io import atomic_json, safe_path
 
 
 class MethodAgent(BaseAgent):
@@ -96,8 +98,33 @@ class MethodAgent(BaseAgent):
     def run(self, stage_id: str, inputs: dict, state: dict) -> dict:
         """Audit revised designs before expensive code generation begins."""
         prompt = self.build_prompt(stage_id, inputs, state)
-        output = self.parse_output(self._call_llm(prompt), stage_id, inputs)
-        if isinstance(inputs.get("review_feedback"), dict):
+        revision = isinstance(inputs.get("review_feedback"), dict)
+        draft_path = None
+        context_digest = None
+        output = None
+        if revision and state.get("session_dir"):
+            context_digest = hashlib.sha256(("method-audit-v1\n" + prompt).encode("utf-8")).hexdigest()
+            draft_path = safe_path(state["session_dir"],
+                                   f".drafts/method_{context_digest[:20]}.json")
+            if draft_path.is_file():
+                try:
+                    saved = json.loads(draft_path.read_text(encoding="utf-8"))
+                    candidate = saved.get("candidate")
+                    if saved.get("context_sha256") == context_digest and isinstance(candidate, dict):
+                        self._validate_candidate(candidate)
+                        output = candidate
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    output = None
+        if output is None:
+            output = self.parse_output(self._call_llm(prompt), stage_id, inputs)
+            self._validate_candidate(output)
+            if draft_path is not None:
+                atomic_json(draft_path, {"schema_version": 1, "context_sha256": context_digest,
+                                         "candidate": output})
+        else:
+            import logging
+            logging.info("[MethodAgent] resuming validated method candidate; audit pending")
+        if revision:
             audit_prompt = f"""你是方法一致性审计员。只检查内部数学与算法一致性，不评价新颖性。
 研究问题：{inputs.get('research_question', '')}
 候选方法：{json.dumps(output, ensure_ascii=False)}
@@ -106,14 +133,24 @@ class MethodAgent(BaseAgent):
 声称的闭式梯度是否真的对所写目标求导；伪代码与文字是否一致。
 输出 JSON：{{"valid": true|false, "issues": [{{"severity":"critical|major|minor",
 "invariant":"被违反的不变量", "contradiction":"具体矛盾", "repair":"最小修复"}}]}}。
-只要存在 critical 或 major 内部矛盾，valid 必须为 false。"""
-            audit = self._parse_json(self._call_llm(audit_prompt))
+只要存在 critical 或 major 内部矛盾，valid 必须为 false。最多返回 4 个问题，
+每个字符串字段不超过 80 个汉字；不要输出推理过程、Markdown 或额外字段。"""
+            previous_tokens, previous_thinking = self.max_tokens, self.use_extended_thinking
+            try:
+                self.max_tokens = 1536
+                self.use_extended_thinking = False
+                audit = self._parse_json(self._call_llm(audit_prompt))
+            finally:
+                self.max_tokens, self.use_extended_thinking = previous_tokens, previous_thinking
             issues = audit.get("issues") if isinstance(audit, dict) else None
             blockers = [item for item in issues or [] if isinstance(item, dict)
                         and item.get("severity") in {"critical", "major"}]
             if (audit.get("parse_error") or not isinstance(audit.get("valid"), bool)
                     or not isinstance(issues, list) or audit.get("valid") is not True or blockers):
-                summary = "; ".join(str(item.get("contradiction", "")) for item in blockers[:3])
+                summary = "; ".join(str(item.get("contradiction", ""))[:240]
+                                    for item in blockers[:3])
+                if draft_path is not None:
+                    draft_path.unlink(missing_ok=True)
                 raise ValueError("Method consistency audit failed"
                                  + (f": {summary}" if summary else ""))
             output["consistency_audit"] = audit
@@ -136,7 +173,14 @@ class MethodAgent(BaseAgent):
         return output
 
     def validate_output(self, output: dict) -> None:
-        super().validate_output(output)
+        self._validate_candidate(output)
+        if output.get("revision_response"):
+            audit = output.get("consistency_audit")
+            if not isinstance(audit, dict) or audit.get("valid") is not True:
+                raise ValueError("Revised method is missing a passing consistency audit")
+
+    def _validate_candidate(self, output: dict) -> None:
+        BaseAgent.validate_output(self, output)
         if not output["invariants"]:
             raise ValueError("Method must define at least one falsifiable invariant")
         required = {"quantity", "definition", "monotonic_effect", "falsification_test"}
@@ -145,7 +189,3 @@ class MethodAgent(BaseAgent):
                     or not all(isinstance(invariant[key], str) and invariant[key].strip()
                                for key in required)):
                 raise ValueError("Each method invariant needs definition, direction, and test")
-        if output.get("revision_response"):
-            audit = output.get("consistency_audit")
-            if not isinstance(audit, dict) or audit.get("valid") is not True:
-                raise ValueError("Revised method is missing a passing consistency audit")

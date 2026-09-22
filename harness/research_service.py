@@ -98,7 +98,20 @@ class ResearchService:
                 artifacts.append({"stage": stage, "path": str(path)})
         draft_progress = None
         paper_draft_progress = None
+        method_draft_progress = None
         draft_dir = safe_path(cp.session_dir, ".drafts")
+        if state.get("current_stage") == "method_design" and draft_dir.is_dir():
+            try:
+                drafts = sorted(draft_dir.glob("method_*.json"),
+                                key=lambda item: item.stat().st_mtime, reverse=True)
+                if drafts:
+                    draft = json.loads(drafts[0].read_text(encoding="utf-8"))
+                    method_draft_progress = {
+                        "candidate_ready": isinstance(draft.get("candidate"), dict),
+                        "audit_pending": True,
+                    }
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
         if state.get("current_stage") == "coding" and draft_dir.is_dir():
             try:
                 drafts = sorted(draft_dir.glob("coding_*.json"),
@@ -163,6 +176,7 @@ class ResearchService:
                 "acceptance": acceptance,
                 "draft_progress": draft_progress,
                 "paper_draft_progress": paper_draft_progress,
+                "method_draft_progress": method_draft_progress,
                 "revision_round": int(state.get("metadata", {}).get("revision_round", 0)),
                 "repairs": len((state["stages"].get("coding", {}).get("output") or {}).get("repair_history", [])),
                 "checkpoint": str(cp.checkpoint_file)}

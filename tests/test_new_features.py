@@ -213,6 +213,41 @@ def test_revised_method_runs_consistency_audit_before_coding(monkeypatch):
         }}, {})
 
 
+def test_revised_method_reuses_candidate_after_audit_timeout(tmp_path, monkeypatch):
+    agent = MethodAgent()
+    method = {
+        "method_name": "M", "overview": "O", "components": [], "algorithm": "theta -= grad",
+        "method_section_draft": "Draft", "revision_response": ["fixed direction"],
+        "invariants": [{"quantity": "theta", "definition": "theta in [0, 1]",
+                        "monotonic_effect": "larger theta narrows the interval",
+                        "falsification_test": "compare widths at theta=0 and theta=1"}],
+    }
+    first = iter([json.dumps(method), TimeoutError("read operation timed out")])
+
+    def first_call(prompt):
+        value = next(first)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(agent, "_call_llm", first_call)
+    inputs = {"review_feedback": {
+        "weaknesses": [{"severity": "critical", "issue": "wrong direction"}],
+    }}
+    state = {"session_dir": str(tmp_path)}
+    with pytest.raises(TimeoutError):
+        agent.run("method_design", inputs, state)
+    assert len(list((tmp_path / ".drafts").glob("method_*.json"))) == 1
+
+    prompts = []
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or
+                        json.dumps({"valid": True, "issues": []}))
+    output = agent.run("method_design", inputs, state)
+    assert len(prompts) == 1
+    assert "一致性审计员" in prompts[0]
+    assert output["consistency_audit"] == {"valid": True, "issues": []}
+
+
 def test_dependency_missing(monkeypatch):
     from harness.skills import dependency_check
     def missing(name):

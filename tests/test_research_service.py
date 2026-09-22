@@ -56,6 +56,7 @@ def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     assert view["revision_round"] == 0
     assert view["draft_progress"] is None
     assert view["paper_draft_progress"] is None
+    assert view["method_draft_progress"] is None
 
 
 def test_snapshot_exposes_coding_draft_progress(service):
@@ -87,6 +88,19 @@ def test_snapshot_exposes_paper_draft_progress(service):
     assert view["paper_draft_progress"] == {
         "generated_sections": 2, "total_sections": 5, "metadata_ready": True,
     }
+
+
+def test_snapshot_exposes_pending_method_audit(service):
+    cp = checkpoint(service, "running")
+    state = cp.load()
+    state["current_stage"] = "method_design"
+    cp.save(state)
+    draft = cp.session_dir / ".drafts" / "method_context.json"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(json.dumps({"candidate": {"method_name": "M"}}), encoding="utf-8")
+
+    view = service.handle({"action": "status", "session": "study"})
+    assert view["method_draft_progress"] == {"candidate_ready": True, "audit_pending": True}
 
 
 def test_snapshot_exposes_current_acceptance_report_and_rejects_stale_one(service):
