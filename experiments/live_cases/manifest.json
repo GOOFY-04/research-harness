@@ -1,0 +1,190 @@
+{
+  "scope": "Unaccepted generated research cases retained for executable auditing. Not validated algorithms or publication claims.",
+  "cases": {
+    "forecast_r6": {
+      "session": "research_fe724cebd992",
+      "workflow_status": "completed",
+      "checkpoint_sha256": "6c873a11bd48bf317b4c4176910f04c1842f03402e2f9bca6af3f59703a6ed1a",
+      "entry_point": "train.py",
+      "declared_dependencies": "",
+      "files": [
+        {
+          "path": "models.py",
+          "content_sha256": "e95ad30652eb6c00470378abba120c9235f715a08833447af7d1c3f15739c5a0"
+        },
+        {
+          "path": "baselines.py",
+          "content_sha256": "fee2f282ce87c07c25c74effc38351c0084fbd99280dd540f710b5424c9da0f4"
+        },
+        {
+          "path": "acpf_ut.py",
+          "content_sha256": "bffca987c98696f9f1e03be80f45da2d234b9923bffb0d1ca8ac15ee00eabd4e"
+        },
+        {
+          "path": "benchmark.py",
+          "content_sha256": "ac1c5b87203b0653cd7d07c6e78a47a246e54322f20a797d99122600d2817a04"
+        },
+        {
+          "path": "train.py",
+          "content_sha256": "207415f5759d088f3fe59468d9c3064abb7f7ecaea70e0c9a93cfe889071b8d3"
+        }
+      ],
+      "metrics": {
+        "proposed_primary": 2.934,
+        "baseline_primary": 2.8824,
+        "improvement_delta": 0.0516,
+        "sample_count": 100
+      },
+      "review": {
+        "recommendation": "weak_reject",
+        "evidence_verdict": "supported",
+        "claim_scope": "在500个样本的合成漂移数据（3次均值偏移）上，ACPF-UT相比固定alpha基线覆盖率略有下降（2.934 vs 2.8824宽度差），但结果仅基于单一快速运行，统计显著性未验证。",
+        "weaknesses": [
+          {
+            "issue": "效用函数中的lambda_cov和mu_width参数未讨论其敏感性，可能影响算法稳定性",
+            "severity": "major",
+            "category": "validity",
+            "suggestion": "补充参数扫描实验，分析不同权重下的性能变化并报告敏感性"
+          },
+          {
+            "issue": "实验数据仅包含简单均值漂移，未测试复杂漂移模式（如方差变化、相关性漂移）",
+            "severity": "major",
+            "category": "scope",
+            "suggestion": "扩展至多维数据或加入季节性、突变量化等更真实的非平稳场景"
+          },
+          {
+            "issue": "未与加权保形预测（如Jonkers 2024）进行比较，遗漏关键基线",
+            "severity": "minor",
+            "category": "presentation",
+            "suggestion": "加入加权保形预测基线以展示方法的相对优势"
+          }
+        ]
+      },
+      "acceptance": {
+        "decision": "rejected",
+        "failed_required_checks": [
+          "review:no-validity-blockers"
+        ]
+      }
+    },
+    "robust_location_v2": {
+      "session": "robust_location_v2_20260922",
+      "workflow_status": "completed",
+      "checkpoint_sha256": "908e43cf095f0caea8217f6f1cc5cfd55617b0eb4af4a7160332de6f9133f992",
+      "entry_point": "train.py",
+      "declared_dependencies": "None",
+      "files": [
+        {
+          "path": "core.py",
+          "content_sha256": "f53a512b92755dedd5cce1ac5d52f471561e4800f901a85a0585fdea1b24c030"
+        },
+        {
+          "path": "train.py",
+          "content_sha256": "15986fd65cd9c8140e5c912b8acdae3d40e0193b29e62364968359755f109e51"
+        }
+      ],
+      "metrics": {
+        "proposed_primary": 0.06693292886381896,
+        "baseline_primary": 0.21742790342340945,
+        "improvement_delta": -0.1504949745595905,
+        "sample_count": 50,
+        "n_tests_per_scenario": 50,
+        "n_scenarios": 5,
+        "calibrated_c": 0.03,
+        "overall_mean_mse.Plain Mean": 0.32589746306639594,
+        "overall_mean_mse.Median": 0.027204118918590314,
+        "overall_mean_mse.Fixed Trimmed": 0.21742790342340945,
+        "overall_mean_mse.SATS (Proposed)": 0.06693292886381896,
+        "overall_mean_mse.SATS (Ablation c=0)": 0.21742790342340945,
+        "per_scenario_metrics.Clean.Plain Mean.mean_mse": 0.008813155714025453,
+        "per_scenario_metrics.Clean.Plain Mean.se": 0.0018230601746862386,
+        "per_scenario_metrics.Clean.Median.mean_mse": 0.013501474436162883,
+        "per_scenario_metrics.Clean.Median.se": 0.0023378510094825026,
+        "per_scenario_metrics.Clean.Fixed Trimmed.mean_mse": 0.00914368667908134,
+        "per_scenario_metrics.Clean.Fixed Trimmed.se": 0.0017657380506283216,
+        "per_scenario_metrics.Clean.SATS (Proposed).mean_mse": 0.01064958765910113,
+        "per_scenario_metrics.Clean.SATS (Proposed).se": 0.0018295971143631085,
+        "per_scenario_metrics.Clean.SATS (Ablation c=0).mean_mse": 0.00914368667908134,
+        "per_scenario_metrics.Clean.SATS (Ablation c=0).se": 0.0017657380506283216,
+        "per_scenario_metrics.Sym_Contam_5pct.Plain Mean.mean_mse": 0.008903853579520678,
+        "per_scenario_metrics.Sym_Contam_5pct.Plain Mean.se": 0.00165648880811233,
+        "per_scenario_metrics.Sym_Contam_5pct.Median.mean_mse": 0.014088735245360504,
+        "per_scenario_metrics.Sym_Contam_5pct.Median.se": 0.0020669456624227375,
+        "per_scenario_metrics.Sym_Contam_5pct.Fixed Trimmed.mean_mse": 0.010056674702067659,
+        "per_scenario_metrics.Sym_Contam_5pct.Fixed Trimmed.se": 0.0018120088111583665,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Proposed).mean_mse": 0.012938479965152745,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Proposed).se": 0.0020857273468336246,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Ablation c=0).mean_mse": 0.010056674702067659,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Ablation c=0).se": 0.0018120088111583665,
+        "per_scenario_metrics.Pos_Contam_5pct.Plain Mean.mean_mse": 0.1608380086368454,
+        "per_scenario_metrics.Pos_Contam_5pct.Plain Mean.se": 0.010435038613720242,
+        "per_scenario_metrics.Pos_Contam_5pct.Median.mean_mse": 0.020629982827978916,
+        "per_scenario_metrics.Pos_Contam_5pct.Median.se": 0.0037260037498185856,
+        "per_scenario_metrics.Pos_Contam_5pct.Fixed Trimmed.mean_mse": 0.024632940269225485,
+        "per_scenario_metrics.Pos_Contam_5pct.Fixed Trimmed.se": 0.003994178337052792,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Proposed).mean_mse": 0.024632940269225485,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Proposed).se": 0.003994178337052792,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Ablation c=0).mean_mse": 0.024632940269225485,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Ablation c=0).se": 0.003994178337052792,
+        "per_scenario_metrics.Sym_Contam_15pct.Plain Mean.mean_mse": 0.010349743280370395,
+        "per_scenario_metrics.Sym_Contam_15pct.Plain Mean.se": 0.002048531830384605,
+        "per_scenario_metrics.Sym_Contam_15pct.Median.mean_mse": 0.01604393573480618,
+        "per_scenario_metrics.Sym_Contam_15pct.Median.se": 0.0024113361583866354,
+        "per_scenario_metrics.Sym_Contam_15pct.Fixed Trimmed.mean_mse": 0.01260182772782317,
+        "per_scenario_metrics.Sym_Contam_15pct.Fixed Trimmed.se": 0.002494288459350576,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Proposed).mean_mse": 0.017924894514425707,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Proposed).se": 0.003977752827967892,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Ablation c=0).mean_mse": 0.01260182772782317,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Ablation c=0).se": 0.002494288459350576,
+        "per_scenario_metrics.Pos_Contam_15pct.Plain Mean.mean_mse": 1.4405825541212178,
+        "per_scenario_metrics.Pos_Contam_15pct.Plain Mean.se": 0.031170342894445164,
+        "per_scenario_metrics.Pos_Contam_15pct.Median.mean_mse": 0.07175646634864308,
+        "per_scenario_metrics.Pos_Contam_15pct.Median.se": 0.01003697500158368,
+        "per_scenario_metrics.Pos_Contam_15pct.Fixed Trimmed.mean_mse": 1.0307043877388495,
+        "per_scenario_metrics.Pos_Contam_15pct.Fixed Trimmed.se": 0.027435206476871303,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Proposed).mean_mse": 0.26851874191118974,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Proposed).se": 0.021513086880456174,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Ablation c=0).mean_mse": 1.0307043877388495,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Ablation c=0).se": 0.027435206476871303
+      },
+      "review": {
+        "recommendation": "weak_reject",
+        "evidence_verdict": "inconclusive",
+        "claim_scope": "在 n=128、50 个独立测试重复下，SATS 仅在 15% 单侧正污染场景显著优于固定截尾基线；在干净、对称污染及 5% 低污染单侧场景下无显著优势或效率略降，无法支持“保持干净高斯效率同时普遍降低 MSE”的广泛结论。",
+        "weaknesses": [
+          {
+            "issue": "在 5% 单侧污染场景下，SATS 的表现与固定截尾完全一致（MSE 均为 0.0246），表明校准得到的 c=0.03 在该污染水平下未触发有效的不对称截尾，或固定截尾已足以应对。",
+            "severity": "major",
+            "category": "validity",
+            "suggestion": "需要分析低污染率下偏度 g 的分布。如果 g 过小，c*g 可能不足以改变截尾比例。建议绘制 g 的分布直方图并说明为何 c=0.03 在此场景下无效。"
+          },
+          {
+            "issue": "在干净数据场景下，SATS 的 MSE（0.0106）略高于固定截尾（0.0091）和普通均值（0.0088），违反了“保持干净高斯效率”的核心假设。",
+            "severity": "major",
+            "category": "validity",
+            "suggestion": "检查干净数据下的偏度估计噪声。建议引入偏度阈值（如 |g|<0.2 时强制对称截尾），以避免在干净数据上的性能损失。"
+          },
+          {
+            "issue": "校准过程仅使用 20 次重复且基于固定种子，缺乏对 c 值选择的鲁棒性验证。若校准数据稍作变动，最优 c 值可能会显著漂移。",
+            "severity": "major",
+            "category": "validity",
+            "suggestion": "增加校准重复次数（如 100 次）或使用多组独立校准种子，报告 c 值的置信区间或敏感性分析。"
+          },
+          {
+            "issue": "代码中当 alpha_L 或 alpha_R 计算值为 0 时，强制回退到对称 5%/5% 截尾，这限制了方法在极端偏度下的潜力。",
+            "severity": "minor",
+            "category": "validity",
+            "suggestion": "修改回退逻辑，允许截尾比例在 [0, 0.1] 范围内连续变化，仅在数值不稳定时回退。"
+          }
+        ]
+      },
+      "acceptance": {
+        "decision": "rejected",
+        "failed_required_checks": [
+          "review:evidence-verdict",
+          "review:no-validity-blockers"
+        ]
+      }
+    }
+  }
+}

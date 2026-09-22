@@ -1,0 +1,154 @@
+{
+  "scope": "Deterministic replay verifies recorded numbers, not scientific validity or independent replication.",
+  "metric_tolerance": {
+    "relative": 1e-12,
+    "absolute": 1e-12
+  },
+  "cases": {
+    "forecast_r6": {
+      "source_hashes_verified": true,
+      "same_metrics": true,
+      "metric_count": 4,
+      "metrics": {
+        "proposed_primary": 2.934,
+        "baseline_primary": 2.8824,
+        "improvement_delta": 0.0516,
+        "sample_count": 100
+      },
+      "independent_audit": {
+        "seed": 42,
+        "n_samples": 500,
+        "n_eval": 100,
+        "acpf_ut": {
+          "coverage": 0.84,
+          "avg_width": 2.934,
+          "delta_width_vs_fixed": 0.0516,
+          "final_alpha": 0.05
+        },
+        "fixed_alpha": {
+          "coverage": 0.81,
+          "avg_width": 2.8824
+        },
+        "conformal_pid": {
+          "coverage": 0.94,
+          "avg_width": 3.6077,
+          "delta_width_vs_fixed": 0.7252
+        }
+      },
+      "original_acceptance": {
+        "decision": "rejected",
+        "failed_required_checks": [
+          "review:no-validity-blockers"
+        ]
+      }
+    },
+    "robust_location_v2": {
+      "source_hashes_verified": true,
+      "same_metrics": true,
+      "metric_count": 62,
+      "metrics": {
+        "proposed_primary": 0.06693292886381896,
+        "baseline_primary": 0.21742790342340945,
+        "improvement_delta": -0.1504949745595905,
+        "sample_count": 50,
+        "n_tests_per_scenario": 50,
+        "n_scenarios": 5,
+        "calibrated_c": 0.03,
+        "overall_mean_mse.Plain Mean": 0.32589746306639594,
+        "overall_mean_mse.Median": 0.027204118918590314,
+        "overall_mean_mse.Fixed Trimmed": 0.21742790342340945,
+        "overall_mean_mse.SATS (Proposed)": 0.06693292886381896,
+        "overall_mean_mse.SATS (Ablation c=0)": 0.21742790342340945,
+        "per_scenario_metrics.Clean.Plain Mean.mean_mse": 0.008813155714025453,
+        "per_scenario_metrics.Clean.Plain Mean.se": 0.0018230601746862386,
+        "per_scenario_metrics.Clean.Median.mean_mse": 0.013501474436162883,
+        "per_scenario_metrics.Clean.Median.se": 0.0023378510094825026,
+        "per_scenario_metrics.Clean.Fixed Trimmed.mean_mse": 0.00914368667908134,
+        "per_scenario_metrics.Clean.Fixed Trimmed.se": 0.0017657380506283216,
+        "per_scenario_metrics.Clean.SATS (Proposed).mean_mse": 0.01064958765910113,
+        "per_scenario_metrics.Clean.SATS (Proposed).se": 0.0018295971143631085,
+        "per_scenario_metrics.Clean.SATS (Ablation c=0).mean_mse": 0.00914368667908134,
+        "per_scenario_metrics.Clean.SATS (Ablation c=0).se": 0.0017657380506283216,
+        "per_scenario_metrics.Sym_Contam_5pct.Plain Mean.mean_mse": 0.008903853579520678,
+        "per_scenario_metrics.Sym_Contam_5pct.Plain Mean.se": 0.00165648880811233,
+        "per_scenario_metrics.Sym_Contam_5pct.Median.mean_mse": 0.014088735245360504,
+        "per_scenario_metrics.Sym_Contam_5pct.Median.se": 0.0020669456624227375,
+        "per_scenario_metrics.Sym_Contam_5pct.Fixed Trimmed.mean_mse": 0.010056674702067659,
+        "per_scenario_metrics.Sym_Contam_5pct.Fixed Trimmed.se": 0.0018120088111583665,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Proposed).mean_mse": 0.012938479965152745,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Proposed).se": 0.0020857273468336246,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Ablation c=0).mean_mse": 0.010056674702067659,
+        "per_scenario_metrics.Sym_Contam_5pct.SATS (Ablation c=0).se": 0.0018120088111583665,
+        "per_scenario_metrics.Pos_Contam_5pct.Plain Mean.mean_mse": 0.1608380086368454,
+        "per_scenario_metrics.Pos_Contam_5pct.Plain Mean.se": 0.010435038613720242,
+        "per_scenario_metrics.Pos_Contam_5pct.Median.mean_mse": 0.020629982827978916,
+        "per_scenario_metrics.Pos_Contam_5pct.Median.se": 0.0037260037498185856,
+        "per_scenario_metrics.Pos_Contam_5pct.Fixed Trimmed.mean_mse": 0.024632940269225485,
+        "per_scenario_metrics.Pos_Contam_5pct.Fixed Trimmed.se": 0.003994178337052792,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Proposed).mean_mse": 0.024632940269225485,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Proposed).se": 0.003994178337052792,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Ablation c=0).mean_mse": 0.024632940269225485,
+        "per_scenario_metrics.Pos_Contam_5pct.SATS (Ablation c=0).se": 0.003994178337052792,
+        "per_scenario_metrics.Sym_Contam_15pct.Plain Mean.mean_mse": 0.010349743280370395,
+        "per_scenario_metrics.Sym_Contam_15pct.Plain Mean.se": 0.002048531830384605,
+        "per_scenario_metrics.Sym_Contam_15pct.Median.mean_mse": 0.01604393573480618,
+        "per_scenario_metrics.Sym_Contam_15pct.Median.se": 0.0024113361583866354,
+        "per_scenario_metrics.Sym_Contam_15pct.Fixed Trimmed.mean_mse": 0.01260182772782317,
+        "per_scenario_metrics.Sym_Contam_15pct.Fixed Trimmed.se": 0.002494288459350576,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Proposed).mean_mse": 0.017924894514425707,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Proposed).se": 0.003977752827967892,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Ablation c=0).mean_mse": 0.01260182772782317,
+        "per_scenario_metrics.Sym_Contam_15pct.SATS (Ablation c=0).se": 0.002494288459350576,
+        "per_scenario_metrics.Pos_Contam_15pct.Plain Mean.mean_mse": 1.4405825541212178,
+        "per_scenario_metrics.Pos_Contam_15pct.Plain Mean.se": 0.031170342894445164,
+        "per_scenario_metrics.Pos_Contam_15pct.Median.mean_mse": 0.07175646634864308,
+        "per_scenario_metrics.Pos_Contam_15pct.Median.se": 0.01003697500158368,
+        "per_scenario_metrics.Pos_Contam_15pct.Fixed Trimmed.mean_mse": 1.0307043877388495,
+        "per_scenario_metrics.Pos_Contam_15pct.Fixed Trimmed.se": 0.027435206476871303,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Proposed).mean_mse": 0.26851874191118974,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Proposed).se": 0.021513086880456174,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Ablation c=0).mean_mse": 1.0307043877388495,
+        "per_scenario_metrics.Pos_Contam_15pct.SATS (Ablation c=0).se": 0.027435206476871303
+      },
+      "independent_audit": [
+        {
+          "scenario": "Clean",
+          "paired_repeats": 50,
+          "paired_mean_mse_difference": 0.001505900980019789,
+          "paired_se": 0.0006437072152221963
+        },
+        {
+          "scenario": "Sym_Contam_5pct",
+          "paired_repeats": 50,
+          "paired_mean_mse_difference": 0.0028818052630850866,
+          "paired_se": 0.00030723271738559223
+        },
+        {
+          "scenario": "Pos_Contam_5pct",
+          "paired_repeats": 50,
+          "paired_mean_mse_difference": 0.0,
+          "paired_se": 0.0
+        },
+        {
+          "scenario": "Sym_Contam_15pct",
+          "paired_repeats": 50,
+          "paired_mean_mse_difference": 0.0053230667866025405,
+          "paired_se": 0.0018838202791560293
+        },
+        {
+          "scenario": "Pos_Contam_15pct",
+          "paired_repeats": 50,
+          "paired_mean_mse_difference": -0.7621856458276598,
+          "paired_se": 0.025598438947572414
+        }
+      ],
+      "original_acceptance": {
+        "decision": "rejected",
+        "failed_required_checks": [
+          "review:evidence-verdict",
+          "review:no-validity-blockers"
+        ]
+      }
+    }
+  }
+}
