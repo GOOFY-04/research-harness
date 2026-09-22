@@ -100,12 +100,15 @@ class MethodAgent(BaseAgent):
         prompt = self.build_prompt(stage_id, inputs, state)
         revision = isinstance(inputs.get("review_feedback"), dict)
         draft_path = None
+        feedback_path = None
         context_digest = None
         output = None
         if revision and state.get("session_dir"):
             context_digest = hashlib.sha256(("method-audit-v1\n" + prompt).encode("utf-8")).hexdigest()
             draft_path = safe_path(state["session_dir"],
                                    f".drafts/method_{context_digest[:20]}.json")
+            feedback_path = safe_path(state["session_dir"],
+                                      f".drafts/audit_feedback_{context_digest[:20]}.json")
             if draft_path.is_file():
                 try:
                     saved = json.loads(draft_path.read_text(encoding="utf-8"))
@@ -115,6 +118,19 @@ class MethodAgent(BaseAgent):
                         output = candidate
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     output = None
+            if output is None and feedback_path.is_file():
+                try:
+                    saved_feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
+                    issues = saved_feedback.get("issues")
+                    if (saved_feedback.get("context_sha256") == context_digest
+                            and isinstance(issues, list) and issues):
+                        prompt += f"""
+
+上一候选被独立一致性审计拒绝。重新设计时必须逐项修复以下问题，不能仅改写表述：
+{json.dumps(issues, ensure_ascii=False)[:4000]}
+"""
+                except (OSError, TypeError, json.JSONDecodeError):
+                    pass
         if output is None:
             output = self.parse_output(self._call_llm(prompt), stage_id, inputs)
             self._validate_candidate(output)
@@ -151,9 +167,17 @@ class MethodAgent(BaseAgent):
                                     for item in blockers[:3])
                 if draft_path is not None:
                     draft_path.unlink(missing_ok=True)
+                if feedback_path is not None and isinstance(issues, list) and issues:
+                    atomic_json(feedback_path, {
+                        "schema_version": 1,
+                        "context_sha256": context_digest,
+                        "issues": issues[:4],
+                    })
                 raise ValueError("Method consistency audit failed"
                                  + (f": {summary}" if summary else ""))
             output["consistency_audit"] = audit
+            if feedback_path is not None:
+                feedback_path.unlink(missing_ok=True)
         self.validate_output(output)
         if self.memory:
             self.memory.append(stage_id, {"inputs": inputs, "output": output},

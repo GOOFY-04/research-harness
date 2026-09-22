@@ -280,6 +280,41 @@ def test_revised_method_reuses_candidate_after_audit_timeout(tmp_path, monkeypat
     assert output["consistency_audit"] == {"valid": True, "issues": []}
 
 
+def test_revised_method_feeds_failed_audit_into_next_candidate(tmp_path, monkeypatch):
+    agent = MethodAgent()
+    method = {
+        "method_name": "M", "overview": "O", "components": [], "algorithm": "theta += grad",
+        "method_section_draft": "Draft", "revision_response": ["fixed direction"],
+        "invariants": [{"quantity": "theta", "definition": "theta in [0, 1]",
+                        "monotonic_effect": "larger theta narrows the interval",
+                        "falsification_test": "compare widths at theta=0 and theta=1"}],
+    }
+    inputs = {"review_feedback": {
+        "weaknesses": [{"severity": "critical", "issue": "wrong direction"}],
+    }}
+    state = {"session_dir": str(tmp_path)}
+    replies = iter([json.dumps(method), json.dumps({
+        "valid": False, "issues": [{"severity": "critical", "invariant": "direction",
+                                      "contradiction": "update sign is reversed",
+                                      "repair": "reverse the sign"}],
+    })])
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: next(replies))
+    with pytest.raises(ValueError, match="update sign is reversed"):
+        agent.run("method_design", inputs, state)
+
+    prompts = []
+    replies = iter([json.dumps({**method, "algorithm": "theta -= grad"}),
+                    json.dumps({"valid": True, "issues": []})])
+    monkeypatch.setattr(agent, "_call_llm",
+                        lambda prompt: prompts.append(prompt) or next(replies))
+    output = agent.run("method_design", inputs, state)
+
+    assert "上一候选被独立一致性审计拒绝" in prompts[0]
+    assert "update sign is reversed" in prompts[0]
+    assert output["algorithm"] == "theta -= grad"
+    assert not list((tmp_path / ".drafts").glob("audit_feedback_*.json"))
+
+
 def test_dependency_missing(monkeypatch):
     from harness.skills import dependency_check
     def missing(name):
