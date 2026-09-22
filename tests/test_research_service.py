@@ -59,6 +59,25 @@ def test_snapshot_preserves_failed_evidence_and_pending_metrics(service):
     assert view["method_draft_progress"] is None
 
 
+def test_snapshot_exposes_real_paired_summary_and_archive_path(service):
+    from experiments.review_calibration import CASES, contract
+    from harness.agents.executor import ExecutorAgent
+
+    cp = checkpoint(service)
+    case = CASES["valid_negative"]
+    result = ExecutorAgent(install_dependencies=False, require_experiment_contract=True).run(
+        "code_execution", {"files": [{"path": "main.py", "content": case["source"]}],
+                           "dependencies": "", "entry_point": "main.py", "experiment_contract": contract(case)},
+        {"session_dir": str(cp.session_dir)})
+    cp.mark_stage_done(cp.load(), "code_execution", result)
+    view = service.handle({"action": "status", "session": "study"})
+    paired = view["evidence"]["paired_comparisons"][0]
+    assert paired["pair_count"] == 80 and paired["direction"] == "minimize"
+    assert paired["mean_difference"] > 0 and paired["standard_error"] > 0
+    assert any(item["stage"] == "code_execution" and Path(item["path"]).is_file() for item in view["artifacts"])
+    assert view["evidence"]["scientific_validity"] == "not_established"
+
+
 def test_snapshot_compacts_errors_but_checkpoint_keeps_full_text(service):
     cp = checkpoint(service)
     state = cp.load()

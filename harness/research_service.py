@@ -99,6 +99,20 @@ class ResearchService:
                    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)}
         required = config.get("agents", {}).get("executor", {}).get("required_metric_keys", [])
         artifacts = []
+        paired = []
+        paired_evidence = output.get("experiment_evidence") or {}
+        definitions = {item["id"]: item for item in paired_evidence.get("contract", {}).get("comparisons", [])}
+        if execution.get("status") == "done":
+            for item in paired_evidence.get("comparisons", []):
+                definition = definitions.get(item["id"], {})
+                paired.append({"id": item["id"], "metric_name": definition.get("metric_name", item["id"]),
+                               "unit": definition.get("unit", ""), "direction": definition.get("direction", ""),
+                               "pair_count": item["pair_count"], "mean_difference": item["paired_mean_difference"],
+                               "standard_error": item["paired_standard_error"],
+                               "evaluation_scope": definition.get("evaluation_scope", "")})
+                path = safe_path(cp.session_dir, item["artifact"]["path"])
+                if path.is_file():
+                    artifacts.append({"stage": "code_execution", "path": str(path)})
         for stage, relative in [("coding", "code"), ("paper_writing", "output/paper.tex"),
                                 ("paper_writing", "output/references.bib"), ("documentation", "README.md")]:
             path = safe_path(cp.session_dir, relative)
@@ -187,6 +201,7 @@ class ResearchService:
                 "evidence": {"execution_kind": output.get("execution_kind", "not_run"),
                              "execution_passed": execution.get("status") == "done" and output.get("success") is True,
                              "missing_metrics": sorted(set(required) - set(metrics)),
+                             "paired_comparisons": paired,
                              "scientific_validity": "not_established"},
                 "acceptance": acceptance,
                 "draft_progress": draft_progress,

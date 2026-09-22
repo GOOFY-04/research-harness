@@ -214,6 +214,17 @@ def test_reviewer_separates_evidence_validity_from_publication_recommendation():
         agent.validate_output(output)
 
 
+def test_reviewer_rejects_contradictory_validity_classification():
+    agent = ReviewerAgent()
+    output = {"recommendation": "reject", "evidence_verdict": "contradicted",
+              "claim_scope": "negative result", "revision_plan": [],
+              "weaknesses": [{"issue": "measurement is broken", "severity": "major", "category": "validity"}]}
+    with pytest.raises(ValueError, match="conflicts"):
+        agent.validate_output(output)
+    output["evidence_verdict"] = "invalid"
+    agent.validate_output(output)
+
+
 def test_reviewer_retry_receives_schema_failure_without_erasing_criticism(tmp_path, monkeypatch):
     import yaml
     from harness.core.checkpoint import CheckpointManager

@@ -41,6 +41,7 @@ agents:
     entry_args: []
     enable_code_review: false
     require_metrics: true
+    require_experiment_contract: true
     required_metric_keys:
       - proposed_primary
       - baseline_primary

@@ -22,3 +22,7 @@ def test_harness_mechanism_ablation_is_reproducible():
     assert audit["additional_model_requests"] == {"durable_resume": 1, "stateless_restart": 3}
     assert audit["same_final_output"] and audit["candidate_unchanged"]
     assert audit["criticism_preserved"] and audit["verified_decision"] == "dismissed"
+    paired = result["paired_measurement_ablation"]
+    assert paired["numeric_and_log_gate_passed"]
+    assert not paired["raw_pair_gate_passed"]
+    assert "differs from paired raw sample mean" in paired["raw_pair_error"]

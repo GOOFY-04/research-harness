@@ -13,6 +13,8 @@ from harness.core.skill import get_global_registry
 from harness.tools.code_runner import write_code_files
 from harness.tools.process import run_command
 from harness.tools.execution_evidence import verify_execution_evidence
+from harness.tools.experiment_contract import (validate_contract, collect_experiment_evidence,
+                                               verify_experiment_evidence)
 from harness.tools.metrics import flatten_numeric_metrics, parse_metric_line
 from harness.tools.validation import (metric_constraint_errors, validate_dependencies,
                                       validate_files, validate_imports,
@@ -27,7 +29,8 @@ class ExecutorAgent(BaseAgent):
     def __init__(self, *args, timeout=600, install_dependencies=True,
                  run_entry_point=False, entry_args=None, enable_code_review=False,
                  require_metrics=False, required_metric_keys=None, python_executable=None,
-                 allowed_dependencies=None, metric_constraints=None, **kwargs):
+                 allowed_dependencies=None, metric_constraints=None,
+                 require_experiment_contract=False, **kwargs):
         super().__init__(*args, **kwargs)
         if timeout <= 0:
             raise ValueError("Executor timeout must be positive")
@@ -39,6 +42,7 @@ class ExecutorAgent(BaseAgent):
             raise ValueError("entry_args must be a list of strings")
         self.enable_code_review = enable_code_review
         self.require_metrics = bool(require_metrics)
+        self.require_experiment_contract = bool(require_experiment_contract)
         self.required_metric_keys = required_metric_keys or []
         self.metric_constraints = validate_metric_constraints(metric_constraints)
         if (not isinstance(self.required_metric_keys, list)
@@ -67,6 +71,9 @@ class ExecutorAgent(BaseAgent):
         session = Path(session_dir).resolve()
         session.mkdir(parents=True, exist_ok=True)
         files = inputs.get("files", [])
+        contract = inputs.get("experiment_contract", state.get("stages", {}).get(
+            "coding", {}).get("output", {}).get("experiment_contract"))
+        validate_contract(contract, self.require_experiment_contract, [item["path"] for item in files])
         validate_files(files, session / "code")
         validate_imports(files, self.allowed_dependencies)
         dependencies = inputs.get("dependencies", "")
@@ -126,6 +133,11 @@ class ExecutorAgent(BaseAgent):
             entry_path = safe_path(code_dir, entry)
             if not entry_path.is_file() or entry_path.suffix != ".py":
                 raise ValueError("entry_point must name an existing Python file")
+            if contract:
+                # Smoke-test files must not masquerade as experiment output.
+                # Only remove declared runtime artifacts inside this fresh code directory.
+                for comparison in contract["comparisons"]:
+                    safe_path(code_dir, comparison["samples_path"]).unlink(missing_ok=True)
             runs.append(execute([python, str(entry_path), *self.entry_args], code_dir, "entry_point"))
             kind = "entry_point"
         success = bool(runs) and all(run["success"] for run in runs)
@@ -152,6 +164,14 @@ class ExecutorAgent(BaseAgent):
             violations = comparison_metric_errors(output["analysis"]["metrics"])
             if violations:
                 error = "HARNESS_METRICS violates comparison contract: " + "; ".join(violations)
+                output.update(success=False, test_success=False, error=error)
+                output["analysis"].update(success=False, errors=[error])
+        if output["success"] and kind == "entry_point" and contract:
+            try:
+                output["experiment_evidence"] = collect_experiment_evidence(
+                    contract, code_dir, log_dir, session, output["analysis"]["metrics"])
+            except (OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
+                error = "Experiment evidence contract failed: " + str(exc)
                 output.update(success=False, test_success=False, error=error)
                 output["analysis"].update(success=False, errors=[error])
         if self.enable_code_review and success:
@@ -188,6 +208,8 @@ class ExecutorAgent(BaseAgent):
     def validate_artifacts(self, output, session_dir):
         if output.get("success") is True:
             evidence_errors, _ = verify_execution_evidence(session_dir, output)
+            paired_errors, _ = verify_experiment_evidence(session_dir, output)
+            evidence_errors.extend(paired_errors)
             if evidence_errors:
                 raise ValueError("Execution evidence is invalid: " + "; ".join(evidence_errors))
 
@@ -218,6 +240,7 @@ class ExecutorAgent(BaseAgent):
                     "install_dependencies": self.install_dependencies,
                     "run_entry_point": self.run_entry_point,
                     "require_metrics": self.require_metrics,
+                    "require_experiment_contract": self.require_experiment_contract,
                     "required_metric_keys": self.required_metric_keys,
                     "metric_constraints": self.metric_constraints,
                     "python_executable": self.python_executable,

@@ -1,0 +1,388 @@
+{
+  "scope": "Two hand-authored known-answer controls, one live draw per prompt version. Classification-only calibration, not an end-to-end research acceptance or general accuracy estimate.",
+  "before_prompt_revision": {
+    "scope": "Two hand-authored known-answer controls; not general review accuracy or scientific novelty.",
+    "model": "agnes-3.0-flash",
+    "cases": {
+      "valid_negative": {
+        "expected_verdict": "contradicted",
+        "metrics": {
+          "proposed_primary": 0.27021501748370375,
+          "baseline_primary": 0.00832867541616687,
+          "improvement_delta": 0.26188634206753686,
+          "sample_count": 80
+        },
+        "paired_summary": {
+          "id": "primary",
+          "pair_count": 80,
+          "proposed_mean": 0.27021501748370375,
+          "baseline_mean": 0.00832867541616687,
+          "paired_mean_difference": 0.26188634206753686,
+          "paired_standard_error": 0.010180267764266155,
+          "improvement_direction": "negative",
+          "uncertainty_scope": "Descriptive paired SE; independence assumptions are declared, not verified. No significance decision."
+        },
+        "review": {
+          "scores": {
+            "novelty": {
+              "score": 1,
+              "comment": "The core 'method' (adding a fixed +0.5 offset) is not novel; it is a fixed, pre-declared perturbation that is intentionally non-optimizing and intentionally expected to perform poorly against the sample mean for a known N(0,1) target."
+            },
+            "technical_soundness": {
+              "score": 9,
+              "comment": "The implementation is perfectly sound for the task it claims to perform. The code is transparent, correctly pairs each seed for the proposed and baseline measurements, computes squared errors relative to the known zero target, and executes without logical errors."
+            },
+            "significance": {
+              "score": 2,
+              "comment": "The result provides a bounded synthetic demonstration of how a fixed positive offset degrades MSE for an N(0,1) population with n=128. It has no broader scientific, theoretical, or practical significance beyond this specific, bounded negative result."
+            },
+            "clarity": {
+              "score": 8,
+              "comment": "The experiment is explicitly bounded and clearly described. The authors explicitly state that generalization beyond the tested population is not claimed, which prevents misinterpretation of the negative results."
+            },
+            "reproducibility": {
+              "score": 10,
+              "comment": "The provided code is fully self-contained, uses standard libraries, defines deterministic seeds, and the execution report confirms successful reproduction of the stated metrics."
+            }
+          },
+          "overall_score": 3,
+          "recommendation": "reject",
+          "evidence_verdict": "contradicted",
+          "claim_scope": "For estimating the mean of N(0,1) with n=128 observations across 80 specific independent seeds, adding a fixed +0.5 offset to the sample mean is bounded-synthetic and measured to significantly increase MSE (negative improvement) compared to the unadjusted sample mean.",
+          "strengths": [
+            "High transparency: The exact code, execution logs, and metric calculations are provided.",
+            "Rigorous experimental design: Properly paired comparison using the same data for both methods.",
+            "Explicit scoping: The authors clearly state that no generalization is claimed."
+          ],
+          "weaknesses": [
+            {
+              "issue": "Lack of novelty: Adding a fixed arbitrary offset to a standard estimator is not a novel contribution or a meaningful research question.",
+              "severity": "critical",
+              "category": "scope",
+              "suggestion": "This is fundamentally a synthetic negative test or a calibration exercise rather than a valid research contribution suitable for a top-tier conference."
+            },
+            {
+              "issue": "The premise is inherently flawed: Adding a +0.5 offset to estimate a mean of 0 is mathematically guaranteed to increase bias and MSE in expectation.",
+              "severity": "major",
+              "category": "validity",
+              "suggestion": "The experiment tests a hypothesis that is trivially known to be false by standard statistical theory, reducing its scientific value."
+            }
+          ],
+          "questions": [
+            "What is the intended scientific purpose of running this experiment if the negative outcome of adding an arbitrary +0.5 offset is already known a priori?",
+            "Does this report represent a failure in the research generation pipeline that defaulted to an arbitrary, non-meaningful perturbation instead of a theoretically motivated method?",
+            "Given the explicit lack of claimed generalization, what specific domain or use case makes this specific bounded result useful to the reader?"
+          ],
+          "revision_plan": [
+            {
+              "priority": "high",
+              "action": "Replace the arbitrary +0.5 offset with a theoretically motivated, data-adaptive method (e.g., a Bayesian prior mean, a shrinkage estimator, or a bounded M-estimator).",
+              "rationale": "To achieve a positive score in novelty and significance, the proposed method must have a legitimate statistical rationale that addresses a known problem (e.g., heavy-tailed data, bounded variance, or prior knowledge)."
+            },
+            {
+              "priority": "high",
+              "action": "Conduct paired statistical significance tests (e.g., a paired t-test or permutation test) on the 80 seeds to quantify the uncertainty of the observed MSE difference.",
+              "rationale": "While a descriptive standard error is provided, formal hypothesis testing is required to establish statistical rigor when reporting performance degradation or improvement."
+            }
+          ],
+          "missing_experiments": [
+            "Sensitivity analysis: Varying the offset magnitude (e.g., +0.1, +0.2, -0.5) to demonstrate the boundary conditions of the MSE penalty.",
+            "Population variation: Testing the offset against non-Gaussian populations (e.g., Uniform, Laplace) to test the robustness of the negative finding, even if it remains a negative result."
+          ],
+          "missing_baselines": [
+            "Theoretically optimal shrinkage estimator (James-Stein estimator) for multivariate targets, if applicable.",
+            "Bayesian estimator with a prior mean of 0 and varying precisions."
+          ]
+        },
+        "classification_correct": false
+      },
+      "label_leakage": {
+        "expected_verdict": "invalid",
+        "metrics": {
+          "proposed_primary": 0.0,
+          "baseline_primary": 1.148707464537585,
+          "improvement_delta": -1.148707464537585,
+          "sample_count": 80
+        },
+        "paired_summary": {
+          "id": "primary",
+          "pair_count": 80,
+          "proposed_mean": 0.0,
+          "baseline_mean": 1.148707464537585,
+          "paired_mean_difference": -1.148707464537585,
+          "paired_standard_error": 0.1572680300709872,
+          "improvement_direction": "negative",
+          "uncertainty_scope": "Descriptive paired SE; independence assumptions are declared, not verified. No significance decision."
+        },
+        "review": {
+          "scores": {
+            "novelty": {
+              "score": 1,
+              "comment": "The concept of 'causal forecaster' in this context is a misnomer, as the implementation actually uses future data to predict the next step, which violates causality. There is no novel contribution in terms of genuine causal modeling."
+            },
+            "technical_soundness": {
+              "score": 1,
+              "comment": "The core algorithm commits a fatal data leakage error by using the 'future_label' directly in the prediction step before it is actually known, thereby ruining the entire technical premise."
+            },
+            "significance": {
+              "score": 1,
+              "comment": "Because the evaluation setup is fundamentally invalid due to the label leakage, the reported metrics (perfect zero MSE) are entirely meaningless and hold zero scientific significance."
+            },
+            "clarity": {
+              "score": 2,
+              "comment": "While the code is extremely short and easy to read, the method's description and the claimed 'causal' insight are completely contradictory to what is actually executed in the code."
+            },
+            "reproducibility": {
+              "score": 8,
+              "comment": "The experiment is highly reproducible in the sense that anyone can re-run the script and get the exact same flawed, leaked results. The harness setup itself is robust."
+            }
+          },
+          "overall_score": 1,
+          "recommendation": "reject",
+          "evidence_verdict": "invalid",
+          "claim_scope": "The execution evidence only shows that a model can achieve 0 MSE by cheating with future data; it completely fails to validate any legitimate one-step-ahead causal forecasting claim.",
+          "strengths": [
+            "The code is simple, lightweight, and successfully runs to completion without crash errors.",
+            "The harness correctly computes the descriptive paired standard error of the differences between the two methods."
+          ],
+          "weaknesses": [
+            {
+              "issue": "Severe data leakage: The proposed method directly reads the 'future_label' to construct its prediction before the label is supposed to be revealed.",
+              "severity": "critical",
+              "category": "validity",
+              "suggestion": "The prediction must strictly depend only on the history ('past'). Remove the direct reading of 'future_label' during the inference step and use an actual predictive model."
+            },
+            {
+              "issue": "Causality violation: The research question demands a 'causal' forecaster where the next label is unavailable at prediction time, but the execution violates this invariant.",
+              "severity": "critical",
+              "category": "validity",
+              "suggestion": "Redesign the pipeline to ensure the proposed module strictly operates on time-series data up to $t-1$ to predict $t$, adhering to temporal ordering."
+            },
+            {
+              "issue": "Meaningless baseline: Comparing a data-leaking model against a sample mean baseline provides no useful scientific insight.",
+              "severity": "major",
+              "category": "validity",
+              "suggestion": "Introduce standard time-series baselines (e.g., ARIMA, naive AR(1) model fitted on the past data only) to establish a fair comparison."
+            }
+          ],
+          "questions": [
+            "How do you justify calling a prediction that directly uses the target label a 'causal' forecast?",
+            "In what real-world scenario would the 'future_label' be available at the exact moment of prediction?",
+            "Have you considered simply modeling the autoregressive parameters from the 'past' to make a legitimate prediction instead?"
+          ],
+          "revision_plan": [
+            {
+              "priority": "high",
+              "action": "Remove the assignment 'proposed_prediction = future_label' and replace it with a valid model prediction using only the 'past' array.",
+              "rationale": "To eliminate the critical data leakage and restore temporal causality."
+            },
+            {
+              "priority": "high",
+              "action": "Align the documented 'core insights' and 'design invariants' with the actually executed causal time-series logic.",
+              "rationale": "To ensure technical consistency between the claimed methodology and the implementation."
+            }
+          ],
+          "missing_experiments": [
+            "Evaluation on a non-Gaussian sequence to test robustness outside the synthetic normal population.",
+            "Comparison against standard autoregressive (AR) baselines fitted solely on the historical data."
+          ],
+          "missing_baselines": [
+            "AR(1) model fitted using only the historical 'past' sequence.",
+            "Naive method that uses the last observation instead of the sample mean."
+          ]
+        },
+        "classification_correct": true
+      }
+    }
+  },
+  "after_prompt_revision": {
+    "scope": "Two hand-authored known-answer controls; not general review accuracy or scientific novelty.",
+    "model": "agnes-3.0-flash",
+    "cases": {
+      "valid_negative": {
+        "expected_verdict": "contradicted",
+        "metrics": {
+          "proposed_primary": 0.27021501748370375,
+          "baseline_primary": 0.00832867541616687,
+          "improvement_delta": 0.26188634206753686,
+          "sample_count": 80
+        },
+        "paired_summary": {
+          "id": "primary",
+          "pair_count": 80,
+          "proposed_mean": 0.27021501748370375,
+          "baseline_mean": 0.00832867541616687,
+          "paired_mean_difference": 0.26188634206753686,
+          "paired_standard_error": 0.010180267764266155,
+          "improvement_direction": "negative",
+          "uncertainty_scope": "Descriptive paired SE; independence assumptions are declared, not verified. No significance decision."
+        },
+        "review": {
+          "scores": {
+            "novelty": {
+              "score": 1,
+              "comment": "完全缺乏新颖性。对已知的样本均值估计器添加固定常数偏移（+0.5）在 N(0,1) 总体下从理论上必然增加误差（因为新估计量的期望变为 0.5，MSE 增加 0.25）。这是一个基础的统计学常识，没有任何创新。"
+            },
+            "technical_soundness": {
+              "score": 8,
+              "comment": "代码实现正确且严谨。使用了独立的伪随机数生成器实例（random.Random(seed)），正确计算了样本均值和均方误差。实验设计符合声明的目标。测量有效，没有发现导致证据无效的 validity 缺陷。"
+            },
+            "significance": {
+              "score": 1,
+              "comment": "该结果没有科学意义。它复现了一个早已知晓的统计事实，且得出的负面结果（方法变差）对于 N(0,1) 总体是确定的。没有实际应用场景。"
+            },
+            "clarity": {
+              "score": 9,
+              "comment": "假设和方法描述极其清晰。没有隐藏的逻辑或模糊的表述，读者可以完全理解实验中发生了什么。"
+            },
+            "reproducibility": {
+              "score": 9,
+              "comment": "提供完整、可运行的代码，固定了种子和算法，结果完全可复现。"
+            }
+          },
+          "overall_score": 3,
+          "recommendation": "reject",
+          "evidence_verdict": "contradicted",
+          "claim_scope": "对于总体为 N(0,1)、样本量为 128 的设定，在 80 次独立种子下，在样本均值上添加固定 +0.5 偏移会使平均平方误差从 ~0.0083 显著增加到 ~0.2702，证据驳斥了该操作能降低 MSE 的假设，但该结论仅限于该特定合成实验。",
+          "strengths": [
+            "代码逻辑严谨，使用了随机种子隔离和正确的统计量计算。",
+            "实验设定清晰，没有统计或实现上的混淆。",
+            "结果报告透明，明确展示了方法相比于基线的大幅性能下降（负结果）。"
+          ],
+          "weaknesses": [
+            {
+              "issue": "假设在理论上是错误的（在均值为 0 的正态分布上添加 0.5 偏移必然增加 MSE），且方法无任何创新性，属于常识性反例测试。",
+              "severity": "major",
+              "category": "scope",
+              "suggestion": "如果这是一个研究，请寻找具有非平凡性质的假设或需要校准的偏移量。如果是为了测试 harness，此实验可以撤回或重定向。"
+            },
+            {
+              "issue": "没有提供理论分析。",
+              "severity": "minor",
+              "category": "presentation",
+              "suggestion": "可以添加 3-4 行理论推导，证明为什么在 N(0,1) 总体下 +0.5 偏移必然增加误差。"
+            }
+          ],
+          "questions": [
+            "为什么选择在 N(0,1) 上添加 0.5 的偏移？是否存在理论上的动机认为该偏移可以抵消某些未知的采样偏差？",
+            "这个实验是否只是一个用于测试评估流水线的 sanity check（而非真正的研究假设）？"
+          ],
+          "revision_plan": [
+            {
+              "priority": "high",
+              "action": "修改原假设。寻找非平凡的设定（例如存在未知偏差的测量设备，或者使用非对称总体），使固定偏移可能在某些条件下有实际意义。",
+              "rationale": "当前假设在基础数学层面不成立，导致实验结果没有科学贡献。"
+            },
+            {
+              "priority": "low",
+              "action": "在文档中加入理论部分，明确计算 E[(X̄+0.5 - 0)^2]。",
+              "rationale": "完善报告的逻辑结构。"
+            }
+          ],
+          "missing_experiments": [
+            "在包含未知真实均值（如 N(μ, 1)）或非对称总体（如偏态分布）下测试偏移是否对特定误差函数（如绝对误差）有帮助。"
+          ],
+          "missing_baselines": [
+            "无需添加，对于均值估计，样本均值（或样本中位数）已是标准的最优/鲁棒基线。"
+          ]
+        },
+        "classification_correct": true
+      },
+      "label_leakage": {
+        "expected_verdict": "invalid",
+        "metrics": {
+          "proposed_primary": 0.0,
+          "baseline_primary": 1.148707464537585,
+          "improvement_delta": -1.148707464537585,
+          "sample_count": 80
+        },
+        "paired_summary": {
+          "id": "primary",
+          "pair_count": 80,
+          "proposed_mean": 0.0,
+          "baseline_mean": 1.148707464537585,
+          "paired_mean_difference": -1.148707464537585,
+          "paired_standard_error": 0.1572680300709872,
+          "improvement_direction": "negative",
+          "uncertainty_scope": "Descriptive paired SE; independence assumptions are declared, not verified. No significance decision."
+        },
+        "review": {
+          "scores": {
+            "novelty": {
+              "score": 2,
+              "comment": "The approach lacks novelty as it relies on a fundamental flaw (using the target label) rather than a genuine algorithmic contribution."
+            },
+            "technical_soundness": {
+              "score": 1,
+              "comment": "The implementation contains a critical validity error where the proposed prediction is directly set to the held-out future label. This label leakage completely invalidates the technical setup and the reported performance improvement."
+            },
+            "significance": {
+              "score": 1,
+              "comment": "The reported significance is an artifact of the data leakage. Because the model has access to the exact answer, any observed improvement is spurious and does not reflect the capability of a deployable causal forecaster."
+            },
+            "clarity": {
+              "score": 5,
+              "comment": "While the source code is concise, the logic is internally inconsistent with the research question of 'deployable prediction' because it explicitly reads the target variable at prediction time."
+            },
+            "reproducibility": {
+              "score": 6,
+              "comment": "The experiment is highly reproducible as it is self-contained and deterministic. However, reproducing the result only replicates the bug, not the intended scientific claim."
+            }
+          },
+          "overall_score": 2,
+          "recommendation": "reject",
+          "evidence_verdict": "invalid",
+          "claim_scope": "The evidence supports the claim that a method with direct access to the held-out target label will have lower MSE than a sample mean, but does not support the claim that a deployable causal forecaster improves prediction performance.",
+          "strengths": [
+            "The experiment harness is clearly defined and easy to run.",
+            "The baseline method (sample mean) is standard and appropriately selected for this synthetic setting."
+          ],
+          "weaknesses": [
+            {
+              "issue": "Label Leakage in Proposed Method",
+              "severity": "critical",
+              "category": "validity",
+              "suggestion": "Replace the direct assignment `proposed_prediction = future_label` with a model that utilizes only the historical `past` data to generate the prediction, ensuring the next label is unavailable at inference time."
+            },
+            {
+              "issue": "Implementation Does Not Match Claimed Method",
+              "severity": "major",
+              "category": "validity",
+              "suggestion": "Provide the source code or a clear description of the 'deployable causal forecaster' so that the execution matches the methodological description."
+            }
+          ],
+          "questions": [
+            "How is the 'deployable causal forecaster' implemented in a way that does not use the held-out target?",
+            "If the model is a simple mean or standard deviation estimator, why is it described as a 'causal' forecaster in the title?"
+          ],
+          "revision_plan": [
+            {
+              "priority": "high",
+              "action": "Implement the forecaster using only the 128 historical observations and ensure the next label is excluded from the prediction pipeline.",
+              "rationale": "To restore internal validity and ensure the comparison is fair."
+            },
+            {
+              "priority": "medium",
+              "action": "Add a statistical significance test (e.g., paired t-test or bootstrap CI) on the corrected paired differences.",
+              "rationale": "To provide a more robust evaluation of the performance improvement."
+            }
+          ],
+          "missing_experiments": [
+            "A corrected version of the experiment with a properly implemented forecaster.",
+            "Comparison against other time-series baselines such as AR(1) or Exponential Smoothing."
+          ],
+          "missing_baselines": [
+            "Persistence (using the most recent observation).",
+            "Linear regression on historical features."
+          ]
+        },
+        "classification_correct": true
+      }
+    }
+  },
+  "remaining_observations": [
+    "The negative control after revision still uses an unsupported significance phrase in claim_scope.",
+    "The reviewer still recommends changing the original hypothesis as a high-priority publication improvement.",
+    "No general claim of reliable review is justified by two controls."
+  ]
+}

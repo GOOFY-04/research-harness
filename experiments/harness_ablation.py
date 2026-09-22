@@ -200,12 +200,33 @@ def audit_recovery_ablation(root: Path) -> dict:
     }
 
 
+def paired_measurement_ablation(root: Path) -> dict:
+    """Same executed program, correct raw observations but false reported means."""
+    from experiments.review_calibration import CASES, contract
+    from harness.agents.executor import ExecutorAgent
+    from harness.tools.execution_evidence import verify_execution_evidence
+
+    case = CASES["valid_negative"]
+    source = case["source"].replace('print("HARNESS_METRICS="', 'a = a * 0.01\nprint("HARNESS_METRICS="')
+    inputs = {"files": [{"path": "main.py", "content": source}], "entry_point": "main.py", "dependencies": ""}
+    numeric = ExecutorAgent(install_dependencies=False, require_metrics=True).run(
+        "code_execution", inputs, {"session_dir": str(root / "numeric")})
+    numeric_errors, _ = verify_execution_evidence(root / "numeric", numeric)
+    paired = ExecutorAgent(install_dependencies=False, require_metrics=True, require_experiment_contract=True).run(
+        "code_execution", {**inputs, "experiment_contract": contract(case)}, {"session_dir": str(root / "paired")})
+    return {"scope": "Fault injection changes reported proposed mean but preserves correct raw paired observations.",
+            "numeric_and_log_gate_passed": numeric["success"] and not numeric_errors,
+            "raw_pair_gate_passed": paired["success"], "raw_pair_error": paired["error"],
+            "reported_primary": numeric["analysis"]["metrics"]["proposed_primary"]}
+
+
 def run_benchmark() -> dict:
     with tempfile.TemporaryDirectory(prefix="research_harness_ablation_") as directory:
         root = Path(directory)
         recovery = recovery_ablation(root / "recovery")
         evidence = evidence_ablation(root / "evidence")
         audit = audit_recovery_ablation(root / "audit")
+        paired = paired_measurement_ablation(root / "paired")
     return {
         "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -213,6 +234,7 @@ def run_benchmark() -> dict:
         "recovery_ablation": recovery,
         "evidence_gate_ablation": evidence,
         "method_audit_recovery_ablation": audit,
+        "paired_measurement_ablation": paired,
     }
 
 

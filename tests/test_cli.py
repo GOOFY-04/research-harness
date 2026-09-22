@@ -54,6 +54,8 @@ def test_config_independent_of_working_directory(tmp_path, monkeypatch):
 def test_full_experiment_requires_machine_readable_metrics():
     cfg = main.load_config(main.ROOT / "configs" / "full_experiment.yaml")
     agents = main.build_agent_registry(cfg, None)
+    assert agents["coder"].require_experiment_contract
+    assert agents["executor"].require_experiment_contract
     assert agents["executor"].run_entry_point is True
     assert agents["executor"].require_metrics is True
     assert agents["executor"].timeout == 180

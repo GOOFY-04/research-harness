@@ -16,11 +16,12 @@ from typing import Any
 from .core.io import safe_path
 from .tools.validation import comparison_metric_errors
 from .tools.execution_evidence import verify_execution_evidence
+from .tools.experiment_contract import verify_experiment_evidence
 from .agents.method_audit import verify_record
 
 
 APPROVED_RECOMMENDATIONS = {"accept", "weak_accept"}
-ACCEPTANCE_POLICY_VERSION = 2
+ACCEPTANCE_POLICY_VERSION = 3
 
 
 def _check(checks: list[dict[str, Any]], check_id: str, category: str,
@@ -134,6 +135,17 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
            "; ".join(evidence_errors) if evidence_errors else
            "archived stdout/stderr hashes and entry-point metrics verified")
     manifest.extend(log_manifest)
+    declared_contract = stages.get("coding", {}).get("output", {}).get("experiment_contract")
+    paired_required = bool(execution.get("execution_policy", {}).get("require_experiment_contract")
+                           or execution.get("experiment_evidence") or declared_contract)
+    paired_errors, paired_manifest = verify_experiment_evidence(root, execution, declared_contract)
+    if paired_required and not declared_contract:
+        paired_errors.append("Coding's pre-execution experiment contract is missing")
+    _check(checks, "execution:paired-measurements", "traceability", not paired_errors,
+           "; ".join(paired_errors) if paired_errors else
+           ("paired sample hashes, means, differences and SE verified" if paired_required
+            else "paired experiment contract is not configured"), required=paired_required)
+    manifest.extend(paired_manifest)
     metrics = _numeric_metrics(execution.get("analysis", {}).get("metrics"))
     _check(checks, "execution:numeric-metrics", "execution", bool(metrics),
            f"{len(metrics)} numeric metrics persisted" if metrics else "no numeric metrics persisted")
@@ -233,9 +245,8 @@ def evaluate_session(session_dir: str | Path, state: dict[str, Any],
            verdict in {"supported", "contradicted"},
            f"evidence verdict is {verdict!r}; accepted values are 'supported' or 'contradicted'")
     blockers = [item for item in review.get("weaknesses", []) if isinstance(item, dict)
-                and (item.get("severity") == "critical"
-                     or item.get("severity") == "major"
-                     and item.get("category", "validity") == "validity")]
+                and item.get("severity") in {"critical", "major"}
+                and item.get("category", "validity") == "validity"]
     _check(checks, "review:no-validity-blockers", "scientific_review", not blockers,
            "no critical or major validity weaknesses" if not blockers
            else f"{len(blockers)} critical/major validity weaknesses remain")

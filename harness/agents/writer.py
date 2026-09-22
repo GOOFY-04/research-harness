@@ -212,6 +212,9 @@ When the method design and source differ, describe the source behavior and label
 Do not claim bit-exact reproducibility unless supplied evidence compares outputs from repeated executions.
 Describe proposed mechanisms as proposed; do not claim implementation details that source and execution do not verify.
 Do not use words such as significant or state-of-the-art without a supplied statistical test or benchmark result.
+When experiment_evidence is present, use its declared metric definition, unit, direction, evaluation
+scope and sample unit. A signed proposed-minus-baseline delta is an improvement only in the declared
+direction. Paired SE is descriptive and is not automatically a significance test or confidence interval.
 Label all missing experiments and result tables explicitly as TODO / not yet measured.
 Use only the supplied citation keys. If none exist, do not cite.
 Use valid LaTeX with single backslashes; escape special characters.

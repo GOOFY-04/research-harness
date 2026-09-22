@@ -117,6 +117,37 @@ def test_acceptance_requires_original_process_evidence(tmp_path):
     assert not check["passed"] and "rerun code_execution" in check["detail"]
 
 
+def test_publication_scope_objections_do_not_invalidate_measured_negative_result(tmp_path):
+    state = completed_state()
+    export_fixture(tmp_path, state)
+    state["stages"]["self_review"]["output"].update({
+        "recommendation": "reject", "evidence_verdict": "contradicted",
+        "weaknesses": [{"severity": "critical", "category": "scope", "issue": "no publication novelty"}],
+    })
+    assert evaluate_session(tmp_path, state, STAGES)["decision"] == "accepted"
+
+
+def test_acceptance_recomputes_paired_measurements_and_binds_declared_contract(tmp_path):
+    from experiments.review_calibration import CASES, contract
+
+    state = completed_state()
+    export_fixture(tmp_path, state)
+    outputs = {key: stage["output"] for key, stage in state["stages"].items()}
+    case = CASES["valid_negative"]
+    coding = {"files": [{"path": "main.py", "content": case["source"]}],
+              "entry_point": "main.py", "dependencies": "", "experiment_contract": contract(case)}
+    execution = ExecutorAgent(install_dependencies=False, require_experiment_contract=True).run(
+        "code_execution", coding, {"session_dir": str(tmp_path)})
+    outputs["coding"].update(coding)
+    outputs["code_execution"].update(execution)
+    outputs["paper_writing"]["verified_metrics"] = execution["analysis"]["metrics"]
+    (tmp_path / "code/main.py").write_text(case["source"], encoding="utf-8")
+    assert evaluate_session(tmp_path, state, STAGES)["decision"] == "accepted"
+    outputs["coding"]["experiment_contract"]["comparisons"][0]["unit"] = "wrong unit"
+    report = evaluate_session(tmp_path, state, STAGES)
+    assert "execution:paired-measurements" in report["failed_required_checks"]
+
+
 def test_acceptance_enforces_standard_comparison_arithmetic(tmp_path):
     state = completed_state()
     metrics = {"proposed_primary": 0.8, "baseline_primary": 0.7,

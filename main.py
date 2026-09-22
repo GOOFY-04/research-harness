@@ -86,7 +86,8 @@ def build_agent_registry(config, memory):
             # override it; otherwise inherit the Executor policy.
             policy = ({**settings.get("executor", {}), **cfg}
                       if name == "coder" else cfg)
-            for key in ("allowed_dependencies", "required_metric_keys", "metric_constraints"):
+            for key in ("allowed_dependencies", "required_metric_keys", "metric_constraints",
+                        "require_experiment_contract"):
                 if key in policy:
                     options[key] = policy[key]
         if name == "executor":

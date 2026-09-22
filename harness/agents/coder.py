@@ -5,7 +5,9 @@ import json
 import logging
 import re
 from pathlib import Path
+from uuid import uuid4
 from harness.core.agent import BaseAgent
+from harness.tools.experiment_contract import validate_contract
 from harness.core.io import atomic_json, safe_path, strip_outer_fence
 from harness.tools.validation import (validate_file, validate_files, validate_dependencies,
                                       validate_imports, validate_metric_constraints)
@@ -160,16 +162,43 @@ def ordered_manifest(manifest, session_dir):
     return {**manifest, "files": ordered}
 
 
+CONTRACT_INSTRUCTION = """
+Declare this experiment contract BEFORE generating source or executing code:
+{"version":1,"primary_comparison":"primary","comparisons":[{
+"id":"primary","metric_name":"mean squared estimation error","definition":"squared error against the known synthetic target, averaged over independent trial seeds",
+"unit":"target units squared","direction":"minimize","sample_unit":"one independent trial seed",
+"pairing":"both estimators receive the exact same sample for each seed",
+"evaluation_scope":"identify scenario, held-out population, time range and any aggregation",
+"sampling_assumptions":"state which seeds are independent and any temporal or grouped dependence",
+"proposed_metric":"proposed_primary","baseline_metric":"baseline_primary","samples_path":"results/primary_pairs.json"}]}
+Adapt every field to the actual research question; the example metric is NOT a requirement.
+Declare ALL planned method/baseline comparisons, scenarios and secondary measurement comparisons
+needed to evaluate the hypothesis. Use unique ids and separate files. A shared baseline metric
+key is allowed only when it describes the same evaluation scope and sample mean.
+The declared samples_path files are runtime OUTPUTS, not source manifest files.
+Each is a JSON array of {"pair_id":"unique seed or matched evaluation unit","proposed":number,"baseline":number}.
+Write observed per-unit scores, not repetitions of aggregate results or fabricated uncertainty.
+Both metric keys must equal the arithmetic means of their corresponding raw sample columns.
+The four standard primary keys refer to primary_comparison; sample_count is its number of pairs.
+If averaging multiple scenarios, pair independent seed-level aggregates with explicitly declared
+weights; additionally export per-scenario comparisons. Do not treat dependent time steps as independent seeds.
+HARNESS computes paired differences and SE from these files; preserve negative results.
+The contract is fixed through code repair. Changing hypotheses, metric semantics or evaluation
+scope requires a new research revision, not changing the contract to fit observed results.
+"""
+
+
 class CoderAgent(BaseAgent):
     required_fields = {"files": list, "entry_point": str, "dependencies": str,
                        "run_instructions": str, "test_snippet": str}
 
     def __init__(self, *args, allowed_dependencies=None, required_metric_keys=None,
-                 metric_constraints=None, **kwargs):
+                 metric_constraints=None, require_experiment_contract=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.allowed_dependencies = allowed_dependencies
         self.required_metric_keys = required_metric_keys or []
         self.metric_constraints = validate_metric_constraints(metric_constraints)
+        self.require_experiment_contract = bool(require_experiment_contract)
         if self.allowed_dependencies is not None:
             if (not isinstance(self.allowed_dependencies, list)
                     or not all(isinstance(item, str) and item.strip()
@@ -213,6 +242,24 @@ class CoderAgent(BaseAgent):
         finally:
             self.max_tokens = previous_tokens
 
+    def _measurement_instruction(self, contract):
+        instruction = (
+            f"Runtime measurement requirements: emit all numeric keys {json.dumps(self.required_metric_keys)} "
+            f"in one final HARNESS_METRICS JSON line; constraints: {json.dumps(self.metric_constraints)}. "
+            "Preserve all secondary measurements. improvement_delta is proposed_primary minus baseline_primary.\n"
+        )
+        if contract:
+            instruction += (
+                "For EVERY experiment_contract comparison, write its samples_path at runtime as a JSON array "
+                "of objects with EXACT keys pair_id (unique non-empty STRING), proposed (number), baseline (number). "
+                "Do not substitute seed or metric-key names for these three column names. "
+                "The comparison's proposed_metric and baseline_metric must equal the arithmetic means of these columns. "
+                "The four standard primary metrics describe primary_comparison, with sample_count equal to its row count. "
+                "Preserve the declared metric definition, pairing and scope; do not switch from grouped scenarios "
+                "to a favorable single scenario. Do not redefine or choose the contract inside the running program.\n"
+            )
+        return instruction
+
     def _generate_smoke_test(self, files, context, dependency_instruction, repair=False):
         """Generate a smoke test from real source contracts, not guessed signatures."""
         prompt = f"""Write a short Python smoke test for this exact implementation.
@@ -250,6 +297,7 @@ Research context: {context}"""
             "allowed_dependencies": self.allowed_dependencies,
             "required_metric_keys": self.required_metric_keys,
             "metric_constraints": self.metric_constraints,
+            "require_experiment_contract": self.require_experiment_contract,
         }, ensure_ascii=False, sort_keys=True)
         digest = hashlib.sha256(policy.encode("utf-8")).hexdigest()
         path = safe_path(state.get("session_dir", "."), f".drafts/coding_{digest[:20]}.json")
@@ -273,6 +321,8 @@ Research context: {context}"""
             if [item.get("path") for item in files] != manifest_paths[:len(files)]:
                 return None
             validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
+            validate_contract(manifest.get("experiment_contract"), bool(files) and self.require_experiment_contract,
+                              manifest_paths)
             for info in manifest["files"]:
                 safe_path(state.get("session_dir", "."), info["path"])
             for item in files:
@@ -334,6 +384,7 @@ Allowed third-party dependencies: {json.dumps(self.allowed_dependencies, ensure_
 When this value is not null, every declared dependency must be in that list.
 {dependency_instruction}
 List only PEP 508 package requirements, never pip flags or direct URLs.
+When no third-party packages are needed, dependencies MUST be the empty string, not "None", "null" or prose.
 The entry point will be executed by the harness as a bounded end-to-end experiment. It must:
 - run with no mandatory command-line arguments and require no external files, downloads or credentials;
 - use deterministic seeds and a download-free synthetic benchmark tied to the research question;
@@ -355,18 +406,43 @@ The entry point will be executed by the harness as a bounded end-to-end experime
 Research design:
 {context}"""
             for manifest_attempt in range(3):
-                manifest = self._parse_json(self._call_llm(manifest_prompt))
+                raw_manifest = self._call_llm(manifest_prompt)
+                manifest = self._parse_json(raw_manifest)
                 try:
                     manifest = ordered_manifest(manifest, state.get("session_dir", "."))
                     validate_dependencies(manifest.get("dependencies", ""), self.allowed_dependencies)
+                    validate_contract(manifest.get("experiment_contract"), False,
+                                      [item["path"] for item in manifest["files"]])
                     break
                 except (ValueError, TypeError, KeyError) as exc:
+                    self._record_invalid_draft(draft_path, "manifest", raw_manifest, str(exc))
                     if manifest_attempt == 2:
                         raise ValueError(f"Invalid code manifest: {exc}") from exc
                     logger.warning("[CoderAgent] invalid manifest; regenerating: %s", exc)
                     manifest_prompt += (f"\nPrevious manifest was invalid: {exc}. Return only the compact JSON "
                                         "manifest, without file contents or explanatory prose.")
             files = []
+            self._save_draft(draft_path, context_digest, manifest, files)
+        if self.require_experiment_contract and manifest.get("experiment_contract") is None:
+            logger.info("[CoderAgent] file manifest ready; generating experiment measurement contract")
+            contract_prompt = ("Return ONLY the experiment_contract JSON object itself, starting with "
+                               "version and primary_comparison. Do not return a file manifest.\n"
+                               + CONTRACT_INSTRUCTION + "\nResearch design:\n" + context
+                               + "\nAccepted file manifest:\n" + json.dumps(manifest, ensure_ascii=False))
+            for contract_attempt in range(3):
+                raw_contract = self._call_llm(contract_prompt)
+                measurement_contract = self._parse_json(raw_contract)
+                if set(measurement_contract) == {"experiment_contract"}:
+                    measurement_contract = measurement_contract["experiment_contract"]
+                try:
+                    validate_contract(measurement_contract, True, [item["path"] for item in manifest["files"]])
+                    break
+                except (ValueError, TypeError, KeyError) as exc:
+                    self._record_invalid_draft(draft_path, "contract", raw_contract, str(exc))
+                    if contract_attempt == 2:
+                        raise ValueError(f"Invalid experiment measurement contract: {exc}") from exc
+                    contract_prompt += f"\nPrevious contract was invalid: {exc}. Return the corrected contract object only."
+            manifest = {**manifest, "experiment_contract": measurement_contract}
             self._save_draft(draft_path, context_digest, manifest, files)
         manifest_paths = [item["path"] for item in manifest["files"]]
         logger.info("[CoderAgent] manifest accepted: %s files", len(manifest_paths))
@@ -390,6 +466,7 @@ deliberation transcripts. A source block containing ...<truncated>... is only a 
 If this is the entry point, implement the complete deterministic experiment described in the manifest,
 including baseline comparison and the HARNESS_METRICS JSON line. Use fixed iteration counts for reproducibility;
 never use a wall-clock while-loop as the normal training schedule. Keep defaults bounded and download-free.
+{self._measurement_instruction(manifest.get('experiment_contract'))}
 Design: {context}
 Manifest: {json.dumps(manifest, ensure_ascii=False)}
 Existing implemented interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
@@ -430,7 +507,8 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
             self._save_draft(draft_path, context_digest, manifest, files, test)
         output = {"files": files, "entry_point": manifest.get("entry_point", ""),
                   "dependencies": manifest.get("dependencies", ""),
-                  "run_instructions": manifest.get("run_instructions", ""), "test_snippet": test}
+                  "run_instructions": manifest.get("run_instructions", ""), "test_snippet": test,
+                  "experiment_contract": manifest.get("experiment_contract")}
         self.validate_output(output)
         logger.info("[CoderAgent] implementation bundle validated")
         if self.memory:
@@ -454,6 +532,7 @@ Current file: {json.dumps(info, ensure_ascii=False)}"""
             "entry_point": previous_output["entry_point"],
             "dependencies": previous_output["dependencies"],
             "test_snippet": previous_output["test_snippet"],
+            "experiment_contract": previous_output.get("experiment_contract"),
         }
         plan_prompt = f"""A generated research program failed during execution.
 Diagnose the runtime or installation failure and propose the smallest repair.
@@ -550,6 +629,7 @@ equal proposed_primary - baseline_primary. Retain the existing secondary results
 Diagnosis: {plan.get('diagnosis', '')}
 Execution failure: {json.dumps(failure, ensure_ascii=False)}
 Current execution contract: {json.dumps(contract, ensure_ascii=False)}
+{self._measurement_instruction(previous_output.get('experiment_contract'))}
 Project interfaces: {json.dumps(interfaces(files), ensure_ascii=False)}
 Project source: {json.dumps(source_context(files), ensure_ascii=False)}
 Current complete file: {info['content']}"""
@@ -607,10 +687,17 @@ Current complete file: {info['content']}"""
         validate_files(output["files"], ".")
         validate_imports(output["files"], self.allowed_dependencies)
         validate_dependencies(output["dependencies"], self.allowed_dependencies)
+        validate_contract(output.get("experiment_contract"), self.require_experiment_contract,
+                          [item["path"] for item in output["files"]])
         entry = output["entry_point"].replace("\\", "/")
         if entry not in {f["path"].replace("\\", "/") for f in output["files"]}:
             raise ValueError("Entry point missing from generated files")
         compile(output["test_snippet"], "<generated_test>", "exec")
+
+    @staticmethod
+    def _record_invalid_draft(draft_path, kind, raw, error):
+        path = draft_path.parent / "failures" / f"{draft_path.stem}_{kind}_{uuid4().hex}.json"
+        atomic_json(path, {"draft": draft_path.name, "kind": kind, "raw": raw, "error": error})
 
     def parse_output(self, raw_text, stage_id, inputs):
         return self._parse_json(raw_text)

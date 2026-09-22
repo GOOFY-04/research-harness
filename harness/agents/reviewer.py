@@ -56,7 +56,13 @@ class ReviewerAgent(BaseAgent):
         gaps = inputs.get("research_gaps", [])
         baselines = inputs.get("key_baselines", [])
 
-        return f"""请以顶级 AI 会议审稿人的视角，对以下研究进行严格评审。
+        return f"""请先审计实验测量是否可信，再独立评价论文的创新性与发表成熟度。
+这是两个不同的判断：recommendation 可以 reject，同时 evidence_verdict 可以 supported 或
+contradicted。负结果、已知结果、平凡方法、低创新性均不能作为 validity 缺陷；它们只能
+影响论文评价（scope/presentation）。对每条 critical/major validity 意见，必须指出源码或
+测量中一个具体错误，并解释该错误如何破坏当前比较，不能以研究价值低代替证据错误。
+禁止为了获得正结果要求更换原假设。先按当前问题给出可信、反驳、不充分或无效的结论，
+再对新研究方向提供明确标为可选的建议。可选的发表改进不能作为当前证据的验收条件。
 
 研究问题：{rq}
 
@@ -88,6 +94,12 @@ validity 缺陷。若测量和比较有效且证据反驳所检验的假设，�
 泛化范围和额外场景属于 scope。不能为了获得正结果而要求换假设、隐藏负结果或调参。
 不要把宽度值称为覆盖率，不要从未报告的指标推断数值方向；没有相应的配对差值及
 不确定性证据时，不得声称统计显著，也不能把各方法各自的标准误当作配对差值标准误。
+若执行报告含 experiment_evidence，优先引用其中执行前声明的 metric_name、definition、unit、
+direction、evaluation_scope 和 sample_unit，防止把宽度误读为覆盖率或把种子数误读为样本数。
+comparisons 内的均值、paired_mean_difference 与 paired_standard_error 是 harness 从已归档
+配对数据重新计算的描述性统计；它们不能证明配对单位独立、因果顺序正确或设计适合研究问题。
+结合源码检查 pairing 和 sampling_assumptions。没有明确抽样假设、检验或区间，不应仅由 SE
+声称统计显著。当前测量一致但不确定性不足时说明范围或 inconclusive，不能编造 p 值。
 
 请从以下维度评分（1-10分）并给出详细意见，输出 JSON：
 {{
@@ -128,3 +140,9 @@ validity 缺陷。若测量和比较有效且证据反驳所检验的假设，�
                     or weakness.get("severity") not in {"critical", "major", "minor"}
                     or weakness.get("category") not in {"validity", "scope", "presentation"}):
                 raise ValueError("Each weakness needs a valid severity and category")
+        if output["evidence_verdict"] in {"supported", "contradicted"} and any(
+                weakness["category"] == "validity" and weakness["severity"] in {"critical", "major"}
+                for weakness in output["weaknesses"]):
+            raise ValueError("Evidence verdict conflicts with a major/critical validity defect. "
+                             "Resolve the contradiction using the measured evidence: scientific value "
+                             "is scope, while a real measurement defect makes evidence invalid.")
